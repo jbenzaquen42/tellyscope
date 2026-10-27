@@ -102,8 +102,9 @@ Modules: `:app` (the phone app, Kotlin and Jetpack Compose), `:adb` (pure Kotlin
 ## Contributing
 
 An experimental iPhone port lives in [`ios/`](ios/README.md), based on TVADB.
-Its GitHub Actions workflow builds an unsigned IPA for sideloading, with protected
-manual disable/undo. Fire TV Cube 3 and TCL Google TV hardware checks are pending.
+Its GitHub Actions workflow builds an unsigned IPA for sideloading with Tellyscope's
+Overview, Apps, Files, Tweaks, curated debloat review, remote, and history/undo.
+The connection backend has user-confirmed TV connectivity; device mutation checks remain pending.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). If you have an Android TV, a [device report](../../issues/new?template=device_report.yml) helps even if nothing worked.
 

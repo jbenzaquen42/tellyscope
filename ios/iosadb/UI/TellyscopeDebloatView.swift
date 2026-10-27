@@ -253,7 +253,7 @@ struct TellyscopeDebloatView: View {
                 if !snapshot.history.isEmpty {
                     Divider()
                     ForEach(Array(snapshot.history.suffix(4).reversed().enumerated()), id: \.offset) { _, entry in
-                        Text("\(entry.action == "disable" ? "Disabled" : "Enabled") \(appName(entry.packageName)) · \(entry.timestamp, style: .date)")
+                        Text("\(["disable": "Disabled", "enable": "Enabled", "stop": "Stopped", "uninstall": "Uninstalled"][entry.action] ?? entry.action.capitalized) \(appName(entry.packageName)) · \(entry.timestamp, style: .date)")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }

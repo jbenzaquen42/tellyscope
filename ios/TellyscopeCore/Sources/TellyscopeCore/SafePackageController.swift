@@ -25,6 +25,7 @@ public enum SafePackageError: Error, LocalizedError, Equatable {
     case protectedPackage(String)
     case persistence(String)
     case corruptHistory
+    case unsupportedHistoryAction(String)
 
     public var errorDescription: String? {
         switch self {
@@ -37,6 +38,7 @@ public enum SafePackageError: Error, LocalizedError, Equatable {
         case .persistence(let detail): return "Could not save TV history; verify the TV state before retrying: \(detail)"
         case .corruptHistory: return "TV history is damaged; repair or remove it before changing packages."
         case .operationInProgress: return "Another TV package operation is still in progress."
+        case .unsupportedHistoryAction(let action): return "Cannot record unsupported app action: \(action)."
         }
     }
 }
@@ -230,6 +232,22 @@ public actor SafePackageController {
         try await confirmDevice(expectedDeviceID)
     }
 
+    /// Records a successful non-undoable app action performed by the caller.
+    public func recordAppAction(_ action: String, package: String, expectedDeviceID: String) async throws {
+        guard !mutationInProgress else { throw SafePackageError.operationInProgress }
+        mutationInProgress = true
+        defer { mutationInProgress = false }
+        guard action == "stop" || action == "uninstall" else { throw SafePackageError.unsupportedHistoryAction(action) }
+        try validate(package)
+        try await confirmDevice(expectedDeviceID)
+        var state = try loadState()
+        var device = state.devices[expectedDeviceID] ?? DeviceHistory()
+        device.history.append(HistoryEntry(timestamp: Date(), action: action, packageName: package))
+        if action == "uninstall" { device.appDisabled.remove(package) }
+        state.devices[expectedDeviceID] = device
+        try saveState(state)
+    }
+
     private func validate(_ package: String) throws {
         guard isValidPackage(package) else {
             throw SafePackageError.invalidPackage(package)
@@ -321,8 +339,8 @@ public actor SafePackageController {
     private func reconcile(_ deviceID: String, disabled: Set<String>, state: inout HistoryState) {
         guard var device = state.devices[deviceID] else { return }
         if let pending = device.pending {
-            if pending.action == "disable", disabled.contains(pending.package), device.baseline?.contains(pending.package) != true {
-                device.appDisabled.insert(pending.package)
+            if pending.action == "disable", disabled.contains(pending.package) {
+                if device.baseline?.contains(pending.package) != true { device.appDisabled.insert(pending.package) }
                 device.history.append(HistoryEntry(timestamp: Date(), action: "disable", packageName: pending.package))
             } else if pending.action == "enable", !disabled.contains(pending.package) {
                 device.appDisabled.remove(pending.package)

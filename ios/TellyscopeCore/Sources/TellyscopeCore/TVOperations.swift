@@ -656,8 +656,7 @@ public actor TVOperations {
             let target = Self.unpersist(pending.targetSettings ?? [:])
             if let undoing = pending.undoing {
                 let desiredPresence = pending.accessibilityServiceWasPresent
-                let desiredMaster = target["accessibility_enabled"] ?? nil
-                if servicePresent == desiredPresence && (desiredMaster == nil || master == desiredMaster) {
+                if servicePresent == desiredPresence && Self.matches(target, current: current) {
                     guard let index = journal.entries.firstIndex(where: { $0.id == undoing && $0.deviceID == deviceID }) else { throw TVOperationsError.corruptHistory }
                     journal.entries[index].undoneAt = Date()
                     journal.entries.append(makeEntry(deviceID, kind: .accessibility, summary: "Recovered accessibility undo", previous: nil, undoable: false, service: service))

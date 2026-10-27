@@ -146,6 +146,48 @@ final class SafePackageControllerTests: XCTestCase {
         XCTAssertEqual(snapshot.history.map(\.action), ["disable"])
     }
 
+    func testConfirmedDisableOfBaselinePackageIsLoggedButNotRestorable() async throws {
+        let shell = FakeShell()
+        shell.disabled = ["com.example.video"]
+        let controller = SafePackageController(executor: shell, historyURL: tempURL())
+        let unchanged = try await controller.disable(package: "com.example.video")
+        XCTAssertFalse(unchanged.changed)
+
+        // The user turns it on manually after the initial baseline was captured.
+        shell.disabled.remove("com.example.video")
+        let disabledAgain = try await controller.disable(package: "com.example.video")
+        XCTAssertTrue(disabledAgain.changed)
+
+        let snapshot = try await controller.inspect()
+        XCTAssertEqual(snapshot.history.map(\.action), ["disable"])
+        XCTAssertTrue(snapshot.restorablePackages.isEmpty)
+    }
+
+    func testStopAndUninstallHistoryPersistAndUninstallClearsRestoreOwnership() async throws {
+        let shell = FakeShell()
+        let file = tempURL()
+        let controller = SafePackageController(executor: shell, historyURL: file)
+        _ = try await controller.disable(package: "com.example.video")
+        try await controller.recordAppAction("stop", package: "com.example.other", expectedDeviceID: "serial:TV-123")
+        shell.disabled.remove("com.example.video")
+        try await controller.recordAppAction("uninstall", package: "com.example.video", expectedDeviceID: "serial:TV-123")
+
+        let snapshot = try await SafePackageController(executor: shell, historyURL: file).inspect()
+        XCTAssertEqual(snapshot.history.map(\.action), ["disable", "stop", "uninstall"])
+        XCTAssertFalse(snapshot.restorablePackages.contains("com.example.video"))
+    }
+
+    func testOnlyStopAndUninstallCanBeRecordedAsNonUndoableActions() async throws {
+        let shell = FakeShell()
+        let controller = SafePackageController(executor: shell, historyURL: tempURL())
+        do {
+            try await controller.recordAppAction("enable", package: "com.example.video", expectedDeviceID: "serial:TV-123")
+            XCTFail("expected unsupported history action")
+        } catch let error as SafePackageError {
+            XCTAssertEqual(error, .unsupportedHistoryAction("enable"))
+        }
+    }
+
     func testDeviceSwitchDuringMutationIsRejectedAndPendingRecordSurvives() async throws {
         let shell = FakeShell()
         shell.switchAfterDisable = true

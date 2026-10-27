@@ -341,7 +341,7 @@ struct TellyscopeHistoryView: View {
                     Section("Apps") {
                         ForEach(Array(packages.history.reversed().enumerated()), id: \.offset) { _, entry in
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("\(entry.action == "disable" ? "Disabled" : "Enabled") \(entry.packageName)")
+                                Text("\(actionLabel(entry.action)) \(entry.packageName)")
                                 Text(entry.timestamp, style: .date).font(.caption).foregroundStyle(.secondary)
                                 if entry.action == "disable", packages.restorablePackages.contains(entry.packageName), packages.history.last(where: { $0.packageName == entry.packageName })?.timestamp == entry.timestamp {
                                     Button("Undo") { Task { await enable(entry.packageName) } }.frame(minHeight: 44)
@@ -376,6 +376,7 @@ struct TellyscopeHistoryView: View {
         }
     }
     private func controller() throws -> TVOperations { TVOperations(executor: try model.portExecutor(), historyURL: try model.portStorageURL("tv-operations.json")) }
+    private func actionLabel(_ action: String) -> String { ["disable": "Disabled", "enable": "Enabled", "stop": "Stopped", "uninstall": "Uninstalled"][action] ?? action.capitalized }
     @MainActor private func load() async {
         do {
             packages = try await model.safePackageController().inspect()

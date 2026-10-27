@@ -735,6 +735,7 @@ final class AppModel: ObservableObject {
                 applications.removeAll { $0.packageName == app.packageName }
             default: throw ADBClientError.remoteFailure("Unsupported app action")
             }
+            try await guardController.recordAppAction(action == .uninstall ? "uninstall" : "stop", package: app.packageName, expectedDeviceID: expectedDeviceID)
             noticeMessage = action == .uninstall ? "Uninstalled \(app.displayName)" : "Stopped \(app.displayName)"
         } catch { errorMessage = error.localizedDescription }
     }

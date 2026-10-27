@@ -189,7 +189,7 @@ public struct TVSnapshotReader {
 
     private static func meminfo(_ output: String, key: String) -> Int64? {
         guard let line = output.split(whereSeparator: \.isNewline).first(where: { $0.hasPrefix(key + ":") }),
-              let kb = line.split(whereSeparator: \.isWhitespace).dropFirst().first.flatMap { Int64($0) } else { return nil }
+              let kb = line.split(whereSeparator: \.isWhitespace).dropFirst().first.flatMap({ Int64($0) }) else { return nil }
         return kb * 1024
     }
 
@@ -200,7 +200,7 @@ public struct TVSnapshotReader {
 
     private static func cpuPercent(_ before: String, _ after: String) -> Double? {
         func counters(_ output: String) -> (busy: Int64, total: Int64)? {
-            guard let line = output.split(whereSeparator: \.isNewline).first(where: { $0.hasPrefix("cpu ")) else { return nil }
+            guard let line = output.split(whereSeparator: \.isNewline).first(where: { $0.hasPrefix("cpu ") }) else { return nil }
             let v = line.split(whereSeparator: \.isWhitespace).dropFirst().compactMap { Int64($0) }
             guard v.count >= 4 else { return nil }
             let total = v.prefix(8).reduce(0, +)
@@ -357,13 +357,14 @@ public struct TVSnapshotReader {
 
     private static func adbClients(_ output: String, ports: Set<Int>) -> [TVADBClient]? {
         guard output.contains("local_address") else { return nil }
-        return output.split(whereSeparator: \.isNewline).compactMap { line in
+        let clients: [TVADBClient] = output.split(whereSeparator: \.isNewline).compactMap { (line: Substring) -> TVADBClient? in
             let f = line.split(whereSeparator: \.isWhitespace)
             guard f.count >= 4, f[0].hasSuffix(":"), f[3].uppercased() == "01",
                   let local = endpoint(String(f[1])), ports.contains(local.port),
                   let remote = endpoint(String(f[2])) else { return nil }
             return TVADBClient(address: remote.address, port: remote.port)
-        }.reduce(into: [TVADBClient]()) { rows, client in
+        }
+        return clients.reduce(into: [TVADBClient]()) { rows, client in
             if !rows.contains(client) { rows.append(client) }
         }
     }

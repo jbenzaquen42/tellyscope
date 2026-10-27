@@ -94,7 +94,7 @@ struct SafeDebloatView: View {
                     Section("History on this TV") {
                         ForEach(Array(history.reversed().enumerated()), id: \.offset) { _, entry in
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("\(entry.action == "disable" ? "Disabled" : "Enabled") \(entry.packageName)")
+                                Text("\(["disable": "Disabled", "enable": "Enabled", "stop": "Stopped", "uninstall": "Uninstalled"][entry.action] ?? entry.action.capitalized) \(entry.packageName)")
                                     .font(.subheadline)
                                 Text(entry.timestamp, style: .date).font(.caption).foregroundStyle(.secondary)
                             }

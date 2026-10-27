@@ -97,8 +97,8 @@ struct TellyscopeFilesView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 18) {
-                    Picker("Folder", selection: $folder) { Text("Downloads").tag("Download"); Text("Movies").tag("Movies") }.pickerStyle(.segmented)
-                    Button { importer = true } label: { Label("Send file to \(folder)", systemImage: "paperplane.fill").frame(maxWidth: .infinity).padding(18) }.background(TellyscopeStyle.tonal, in: Capsule())
+                    Picker("Folder", selection: $folder) { Text("Downloads").tag("Download"); Text("Movies").tag("Movies") }.pickerStyle(.segmented).disabled(model.isBusy)
+                    Button { importer = true } label: { Label("Send file to \(folder)", systemImage: "paperplane.fill").frame(maxWidth: .infinity).padding(18) }.background(TellyscopeStyle.tonal, in: Capsule()).disabled(model.isBusy)
                     if model.isBusy { ProgressView(model.operationText); if let progress = model.progress { ProgressView(value: progress) }; Button("Cancel transfer") { model.cancelActiveFileTransfer() } }
                     ForEach(model.files.filter { !$0.isDirectory }) { file in
                         TellyscopeCard { HStack {
