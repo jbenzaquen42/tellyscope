@@ -84,6 +84,7 @@ struct TellyscopeRemoteView: View {
                 }
             }
             .confirmationDialog("Restart the TV?", isPresented: $restart, titleVisibility: .visible) { Button("Restart", role: .destructive) { Task { await model.reboot() } } } message: { Text("The TV will disconnect while it restarts.") }
+            .alert("Remote action failed", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) { Button("OK") { model.errorMessage = nil } } message: { Text(model.errorMessage ?? "") }
         }
     }
     private func remoteKey(_ code: Int, _ icon: String, _ label: String, size: CGFloat = 68, primary: Bool = false) -> some View {

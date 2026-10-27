@@ -294,6 +294,7 @@ struct TellyscopeInstallView: View {
                 } onCancel: { picker = false } }
                 .sheet(isPresented: $confirm) { if let inspection, let selected { APKInspectionView(inspection: inspection) { confirm = false; Task { if await model.installAPK(url: selected) { dismiss() } } } } }
                 .onDisappear { if let selected { AppModel.cleanupPreparedInstallPackage(selected) } }
+                .alert("Installation failed", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) { Button("OK") { model.errorMessage = nil } } message: { Text(model.errorMessage ?? "") }
         }
     }
 }
