@@ -1,2 +1,3 @@
 ios/scripts/*.sh text eol=lf
+ios/TellyscopeCore/Sources/TellyscopeCore/Resources/DeviceProfiles/** text eol=lf
 ios/patches/*.patch -whitespace

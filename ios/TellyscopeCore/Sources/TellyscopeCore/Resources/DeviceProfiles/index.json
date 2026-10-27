@@ -7,7 +7,7 @@
   "devices": [
     {
       "id": "tcl-g05-us-ar71",
-      "name": "TCL Smart TV Pro G05 US · AR71",
+      "name": "TCL Smart TV Pro G05 US Â· AR71",
       "match": {
         "manufacturer": [
           "TCL"
@@ -30,7 +30,7 @@
       },
       "sdk": null,
       "file": "devices/tcl-g05-us-ar71.json",
-      "sha256": "c3d659d78a48f7cf044ed63b657a1afea99d0a7b508a2c5e8f5b46ec54abc401"
+      "sha256": "95c635f4dc8f668de141d3b9aa2ae0fec183cb0236be4666358670894af5bc84"
     }
   ]
 }
