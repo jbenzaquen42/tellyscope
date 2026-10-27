@@ -108,6 +108,12 @@ final class DeviceListsTests: XCTestCase {
         XCTAssertEqual(state.match, .model)
         XCTAssertEqual(state.list?.id, entry.id)
         XCTAssertTrue(state.groups.flatMap(\.packages).allSatisfy { !$0.selected })
+        try await store.pick(entry.id, for: "serial:TCL-1")
+        var changedFirmware = properties
+        changedFirmware["incremental"] = "AR68"
+        let stalePick = await store.suggestions(serial: "serial:TCL-1", properties: changedFirmware, sdk: 30, apps: apps)
+        XCTAssertNil(stalePick.list)
+        XCTAssertNotEqual(stalePick.match, .picked)
         if let keep {
             XCTAssertTrue(state.protectedKeep.contains(keep))
             XCTAssertFalse(state.groups.flatMap(\.packages).contains { $0.package == keep })

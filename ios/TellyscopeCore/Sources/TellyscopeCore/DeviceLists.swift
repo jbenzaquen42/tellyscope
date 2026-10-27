@@ -251,7 +251,11 @@ public actor TellyscopeDeviceLists {
             return DeviceListSuggestions(commit: nil, list: nil, entries: [], groups: [], match: .manual, selectedListID: nil, offline: cachedSourceFailed, protectedKeep: protectedKeep)
         }
         let picked = readPicks()[serial]
-        let selectedEntry = picked.flatMap { id in index.devices.first { $0.id == id } }
+        let pickedEntry = picked.flatMap { id in index.devices.first { $0.id == id } }
+        let selectedEntry = pickedEntry.flatMap { entry -> DeviceListEntry? in
+            if bundledDeviceProfiles.contains(where: { $0.entry.id == entry.id }), !matchesRule(entry.match, properties) { return nil }
+            return entry
+        }
         let automatic = selectedEntry == nil ? matchDeviceList(index.devices, serial: serial, properties: properties) : (entry: selectedEntry, makerEntries: [], maker: nil)
         var list: CuratedDeviceList?
         var kind: DeviceListMatchKind = .manual

@@ -15,6 +15,8 @@ Read-only inspection on 2026-10-27 identified this TV as:
 
 The inspection found 153 packages, 129 classified as system packages, and no disabled packages. No apps were disabled, stopped, uninstalled or installed, and no TV settings were changed. The retail model was not reported; this does not establish a particular screen size or retail SKU. Private identifiers, connection addresses and the owner's personal app inventory are not included in this profile.
 
+Storage, CPU/memory and process commands returned usable data. No valid temperature value was exposed through the app's thermal read, so temperature remains unavailable.
+
 ## Profile behavior
 
 The bundled `tcl-g05-us-ar71` profile requires TCL, Smart TV Pro, G05, G05_4K_US, incremental AR71 and SDK 30 together. AR68 and other regional products do not automatically match. The profile remains available offline and is combined with the community lists.
