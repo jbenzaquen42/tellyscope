@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 import Foundation
 
 public struct ShellResult: Sendable {
@@ -33,11 +34,11 @@ public enum SafePackageError: Error, LocalizedError, Equatable {
         case .commandFailed(let output): return output.isEmpty ? "The TV command failed." : output
         case .unknownHome: return "Could not identify the TV's current Home app; no package was disabled."
         case .protectedPackage(let value): return "This TV package is protected: \(value)"
-        case .persistence(let detail): return "Could not save TV history, so no package change was made: \(detail)"
+        case .persistence(let detail): return "Could not save TV history; verify the TV state before retrying: \(detail)"
         case .corruptHistory: return "TV history is damaged; repair or remove it before changing packages."
         case .operationInProgress: return "Another TV package operation is still in progress."
+        }
     }
-}
 }
 
 public struct HistoryEntry: Codable, Equatable, Sendable {
@@ -97,12 +98,13 @@ public actor SafePackageController {
         )
     }
 
-    public func disable(package: String) async throws -> MutationResult {
+    public func disable(package: String, expectedDeviceID: String? = nil) async throws -> MutationResult {
         guard !mutationInProgress else { throw SafePackageError.operationInProgress }
         mutationInProgress = true
         defer { mutationInProgress = false }
         try validate(package)
         let deviceID = try await currentDeviceID()
+        if let expectedDeviceID, deviceID != expectedDeviceID { throw SafePackageError.deviceChanged }
         var state = try loadState()
         var disabled = try await disabledPackages()
         reconcile(deviceID, disabled: disabled, state: &state)
@@ -124,8 +126,22 @@ public actor SafePackageController {
         device.pending = PendingMutation(action: "disable", package: package)
         state.devices[deviceID] = device
         try saveState(state)
+        let finalHome: String
+        do { finalHome = try await resolvedHome() }
+        catch {
+            try clearPending(deviceID)
+            throw error
+        }
+        guard finalHome != package else {
+            try clearPending(deviceID)
+            throw SafePackageError.protectedPackage(package)
+        }
         try await confirmDevice(deviceID)
-        _ = try await executor.run("pm disable-user --user 0 \(package) 2>&1")
+        let mutation = try await executor.run("pm disable-user --user 0 \(package) 2>&1")
+        guard mutation.exitCode == 0 else {
+            try clearPending(deviceID)
+            throw SafePackageError.commandFailed(mutation.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "TV refused to disable \(package)." : mutation.output)
+        }
         try await confirmDevice(deviceID)
         disabled = try await disabledPackages()
         state = try loadState()
@@ -135,11 +151,11 @@ public actor SafePackageController {
         return MutationResult(deviceID: deviceID, packageName: package, changed: true)
     }
 
-    public func enable(package: String) async throws -> MutationResult {
+    public func enable(package: String, expectedDeviceID: String? = nil) async throws -> MutationResult {
         guard !mutationInProgress else { throw SafePackageError.operationInProgress }
         mutationInProgress = true
         defer { mutationInProgress = false }
-        return try await enablePackage(package, expectedDeviceID: nil)
+        return try await enablePackage(package, expectedDeviceID: expectedDeviceID)
     }
 
     private func enablePackage(_ package: String, expectedDeviceID: String?) async throws -> MutationResult {
@@ -159,7 +175,11 @@ public actor SafePackageController {
         state.devices[deviceID] = device
         try saveState(state)
         try await confirmDevice(deviceID)
-        _ = try await executor.run("pm enable --user 0 \(package) 2>&1")
+        let mutation = try await executor.run("pm enable --user 0 \(package) 2>&1")
+        guard mutation.exitCode == 0 else {
+            try clearPending(deviceID)
+            throw SafePackageError.commandFailed(mutation.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "TV refused to enable \(package)." : mutation.output)
+        }
         try await confirmDevice(deviceID)
         disabled = try await disabledPackages()
         state = try loadState()
@@ -170,14 +190,17 @@ public actor SafePackageController {
     }
 
     /// Restores all currently disabled packages this controller can prove it disabled.
-    public func restore() async throws -> [MutationResult] {
+    public func restore(expectedDeviceID: String? = nil) async throws -> [MutationResult] {
+        let startingDeviceID = try await currentDeviceID()
+        if let expectedDeviceID, startingDeviceID != expectedDeviceID { throw SafePackageError.deviceChanged }
         let snapshot = try await inspect()
+        guard snapshot.deviceID == startingDeviceID else { throw SafePackageError.deviceChanged }
         guard !mutationInProgress else { throw SafePackageError.operationInProgress }
         mutationInProgress = true
         defer { mutationInProgress = false }
         var results: [MutationResult] = []
         for package in snapshot.restorablePackages.sorted() {
-            let result = try await enablePackage(package, expectedDeviceID: snapshot.deviceID)
+            let result = try await enablePackage(package, expectedDeviceID: startingDeviceID)
             if result.changed { results.append(result) }
         }
         return results
@@ -197,7 +220,7 @@ public actor SafePackageController {
         let result = try await executor.run("getprop ro.serialno; getprop ro.boot.serialno")
         guard result.exitCode == 0 else { throw SafePackageError.commandFailed(result.output) }
         let values = result.output.split(whereSeparator: \.isNewline).map(String.init).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        guard let serial = values.first(where: { !$0.isEmpty && !["unknown", "null", "0123456789abcdef", "0000000000000000", "123456789"].contains($0.lowercased()) }) else {
+        guard let serial = values.first(where: { isValidSerial($0) && !["unknown", "null", "0123456789abcdef", "0000000000000000", "123456789"].contains($0.lowercased()) }) else {
             throw SafePackageError.missingStableDeviceIdentity
         }
         return "serial:\(serial)"
@@ -205,6 +228,10 @@ public actor SafePackageController {
 
     private func confirmDevice(_ expected: String) async throws {
         guard try await currentDeviceID() == expected else { throw SafePackageError.deviceChanged }
+    }
+
+    private func isValidSerial(_ value: String) -> Bool {
+        value.range(of: #"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"#, options: .regularExpression) != nil
     }
 
     private func resolvedHome() async throws -> String {
@@ -257,6 +284,14 @@ public actor SafePackageController {
             try FileManager.default.createDirectory(at: historyURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try encoder.encode(state).write(to: historyURL, options: .atomic)
         } catch { throw SafePackageError.persistence(error.localizedDescription) }
+    }
+
+    private func clearPending(_ deviceID: String) throws {
+        var state = try loadState()
+        guard var device = state.devices[deviceID] else { return }
+        device.pending = nil
+        state.devices[deviceID] = device
+        try saveState(state)
     }
 
     private func reconcile(_ deviceID: String, disabled: Set<String>, state: inout HistoryState) {

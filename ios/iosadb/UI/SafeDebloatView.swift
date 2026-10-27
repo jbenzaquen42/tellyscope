@@ -182,11 +182,12 @@ struct SafeDebloatView: View {
     }
 
     @MainActor private func change(_ selected: Confirmation) async {
+        guard let expectedDeviceID = snapshot?.deviceID else { return }
         await perform("Verifying app change") { controller in
             switch selected {
-            case .disable(let app): _ = try await controller.disable(package: app.packageName)
-            case .restore(let package): _ = try await controller.enable(package: package)
-            case .restoreAll: _ = try await controller.restore()
+            case .disable(let app): _ = try await controller.disable(package: app.packageName, expectedDeviceID: expectedDeviceID)
+            case .restore(let package): _ = try await controller.enable(package: package, expectedDeviceID: expectedDeviceID)
+            case .restoreAll: _ = try await controller.restore(expectedDeviceID: expectedDeviceID)
             }
         }
     }

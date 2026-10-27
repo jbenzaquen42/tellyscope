@@ -1,8 +1,19 @@
+// SPDX-License-Identifier: GPL-3.0-only
 import Foundation
 import XCTest
 @testable import TellyscopeCore
 
 final class SafePackageControllerTests: XCTestCase {
+    private var temporaryDirectories: [URL] = []
+
+    override func tearDown() {
+        for directory in temporaryDirectories {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        temporaryDirectories.removeAll()
+        super.tearDown()
+    }
+
     func testDisablePersistsBaselineAndRestoreOwnershipAcrossReload() async throws {
         let shell = FakeShell()
         shell.disabled = ["com.example.preexisting"]
@@ -25,6 +36,7 @@ final class SafePackageControllerTests: XCTestCase {
     func testPersistenceFailurePreventsMutation() async throws {
         let shell = FakeShell()
         let parent = tempURL()
+        try FileManager.default.createDirectory(at: parent.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("file blocks directory creation".utf8).write(to: parent)
         let controller = SafePackageController(executor: shell, historyURL: parent.appendingPathComponent("history.json"))
         do {
@@ -75,6 +87,46 @@ final class SafePackageControllerTests: XCTestCase {
             guard case .commandFailed = error else { return XCTFail("unexpected error: \(error)") }
         }
         XCTAssertFalse(shell.commands.contains(where: { $0.hasPrefix("pm disable-user") }))
+    }
+
+    func testHomeChangeImmediatelyBeforeDisableFailsClosed() async throws {
+        let shell = FakeShell()
+        shell.changeHomeOnSecondResolve = "com.example.video/.Home"
+        let controller = SafePackageController(executor: shell, historyURL: tempURL())
+        do {
+            _ = try await controller.disable(package: "com.example.video")
+            XCTFail("expected changed Home refusal")
+        } catch let error as SafePackageError {
+            guard case .protectedPackage = error else { return XCTFail("unexpected error: \(error)") }
+        }
+        XCTAssertFalse(shell.commands.contains(where: { $0.hasPrefix("pm disable-user") }))
+    }
+
+    func testExpectedDeviceIdentityIsCheckedBeforeAllMutations() async throws {
+        let shell = FakeShell()
+        shell.serial = "TV-456"
+        let controller = SafePackageController(executor: shell, historyURL: tempURL())
+        do { _ = try await controller.disable(package: "com.example.video", expectedDeviceID: "serial:TV-123"); XCTFail("expected stale identity") }
+        catch let error as SafePackageError { XCTAssertEqual(error, .deviceChanged) }
+        do { _ = try await controller.enable(package: "com.example.video", expectedDeviceID: "serial:TV-123"); XCTFail("expected stale identity") }
+        catch let error as SafePackageError { XCTAssertEqual(error, .deviceChanged) }
+        do { _ = try await controller.restore(expectedDeviceID: "serial:TV-123"); XCTFail("expected stale identity") }
+        catch let error as SafePackageError { XCTAssertEqual(error, .deviceChanged) }
+        XCTAssertTrue(shell.commands.allSatisfy { $0.hasPrefix("getprop") })
+    }
+
+    func testNonzeroMutationResultClearsIntentAndFails() async throws {
+        let shell = FakeShell()
+        shell.disableExitCode = 1
+        let file = tempURL()
+        let controller = SafePackageController(executor: shell, historyURL: file)
+        do { _ = try await controller.disable(package: "com.example.video"); XCTFail("expected command failure") }
+        catch let error as SafePackageError {
+            guard case .commandFailed = error else { return XCTFail("unexpected error: \(error)") }
+        }
+        let snapshot = try await SafePackageController(executor: shell, historyURL: file).inspect()
+        XCTAssertNil(snapshot.pendingAction)
+        XCTAssertFalse(snapshot.restorablePackages.contains("com.example.video"))
     }
 
     func testInterruptedMutationIsReconciledFromDeviceState() async throws {
@@ -138,7 +190,9 @@ final class SafePackageControllerTests: XCTestCase {
     }
 
     private func tempURL() -> URL {
-        FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("history.json")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        temporaryDirectories.append(directory)
+        return directory.appendingPathComponent("history.json")
     }
 }
 
@@ -150,11 +204,17 @@ private final class FakeShell: ShellExecutor {
     var switchAfterDisable = false
     var serial = "TV-123"
     var disabledOutput: String?
+    var changeHomeOnSecondResolve: String?
+    var homeResolveCount = 0
+    var disableExitCode: Int32 = 0
 
     func run(_ command: String) async throws -> ShellResult {
         commands.append(command)
         if command.hasPrefix("getprop") { return ShellResult(output: "\(serial)\n\n", exitCode: 0) }
-        if command.hasPrefix("cmd package resolve-activity") { return ShellResult(output: homeOutput, exitCode: 0) }
+        if command.hasPrefix("cmd package resolve-activity") {
+            homeResolveCount += 1
+            return ShellResult(output: homeResolveCount == 2 ? (changeHomeOnSecondResolve ?? homeOutput) : homeOutput, exitCode: 0)
+        }
         if command.hasPrefix("pm list packages -d") {
             return ShellResult(output: disabledOutput ?? disabled.sorted().map { "package:\($0)" }.joined(separator: "\n"), exitCode: 0)
         }
@@ -163,7 +223,7 @@ private final class FakeShell: ShellExecutor {
             disabled.insert(package)
             if switchAfterDisable { serial = "TV-456" }
             if throwAfterDisable { throw FakeError.interrupted }
-            return ShellResult(output: "disabled-user", exitCode: 0)
+            return ShellResult(output: "disabled-user", exitCode: disableExitCode)
         }
         if command.hasPrefix("pm enable") {
             let package = command.replacingOccurrences(of: " 2>&1", with: "").split(separator: " ").last.map(String.init) ?? ""

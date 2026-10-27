@@ -34,6 +34,8 @@ def is_arm64_macho(data):
         endian = "<" if magic in (b"\xbe\xba\xfe\xca", b"\xbf\xba\xfe\xca") else ">"
         count = struct.unpack(endian + "I", data[4:8])[0]
         width = 32 if magic in (b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca") else 20
+        if len(data) < 8 + count * width:
+            return False
         return any(struct.unpack(endian + "I", data[8 + width * index:12 + width * index])[0] == 0x0100000C for index in range(count))
     return False
 
@@ -44,6 +46,7 @@ def main():
     require(ipa.is_file(), f"missing IPA: {ipa}")
     digest = hashlib.sha256(ipa.read_bytes()).hexdigest()
     with zipfile.ZipFile(ipa) as archive:
+        require(archive.testzip() is None, "ZIP integrity check failed")
         names = set(archive.namelist())
         prefix = "Payload/TVADB.app/"
         plist_path = prefix + "Info.plist"
@@ -54,6 +57,7 @@ def main():
         require(executable_name and executable_path in names, "app executable is missing")
         require(is_arm64_macho(archive.read(executable_path)), "app executable does not contain arm64")
         require(info.get("CFBundleIdentifier") == EXPECTED_BUNDLE_ID, "unexpected bundle identifier")
+        require(info.get("CFBundleSupportedPlatforms") == ["iPhoneOS"], "expected a device build, not a simulator app")
         require(prefix + "Assets.car" in names or any(name.startswith(prefix + "Assets.car/") for name in names), "compiled app assets are missing")
         require(any(name.startswith(prefix + "en.lproj/") for name in names), "English localization resources are missing")
         require(not any(name.startswith(prefix + "_CodeSignature/") for name in names), "IPA is signed; expected unsigned output")
