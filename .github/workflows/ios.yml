@@ -47,6 +47,21 @@ jobs:
           -derivedDataPath "$RUNNER_TEMP/tellyscope-simulator"
           CODE_SIGNING_ALLOWED=NO build
 
+      - name: Launch on a narrow iPhone simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime=$(xcrun simctl list runtimes --json | python3 -c 'import json,sys; print(next(r["identifier"] for r in reversed(json.load(sys.stdin)["runtimes"]) if r["isAvailable"] and r["name"].startswith("iOS ")))')
+          device=$(xcrun simctl create Tellyscope-Smoke com.apple.CoreSimulator.SimDeviceType.iPhone-13-mini "$runtime")
+          trap 'xcrun simctl shutdown "$device" || true; xcrun simctl delete "$device" || true' EXIT
+          xcrun simctl boot "$device"
+          xcrun simctl bootstatus "$device" -b
+          xcrun simctl install "$device" "$RUNNER_TEMP/tellyscope-simulator/Build/Products/Debug-iphonesimulator/TVADB.app"
+          xcrun simctl launch "$device" app.tellyscope.ios -AppleLanguages '(en)' -AppleLocale en_US
+          sleep 3
+          mkdir -p ios/dist
+          xcrun simctl io "$device" screenshot ios/dist/iphone-13-mini.png
+
       - name: Build and verify unsigned IPA
         shell: bash
         run: bash ios/scripts/build-unsigned-ipa.sh
@@ -59,5 +74,6 @@ jobs:
             ios/dist/TVADB-unsigned.ipa
             ios/dist/TVADB-unsigned.ipa.sha256
             ios/dist/TVADB-unsigned.ipa.provenance.json
+            ios/dist/iphone-13-mini.png
           if-no-files-found: error
           retention-days: 14

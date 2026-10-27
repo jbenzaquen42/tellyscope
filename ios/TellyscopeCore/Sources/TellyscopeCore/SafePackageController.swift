@@ -29,7 +29,7 @@ public enum SafePackageError: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .invalidPackage(let value): return "Invalid Android package name: \(value)"
-        case .missingStableDeviceIdentity: return "The TV did not provide a stable serial number; no change was made."
+        case .missingStableDeviceIdentity: return "The TV did not provide a stable serial number. Reconnect and refresh before changing apps."
         case .deviceChanged: return "The connected TV changed during this operation; reconnect to the original TV and inspect its state."
         case .commandFailed(let output): return output.isEmpty ? "The TV command failed." : output
         case .unknownHome: return "Could not identify the TV's current Home app; no package was disabled."
