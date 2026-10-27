@@ -255,7 +255,7 @@ public actor TVOperations {
             let before = try await freeKilobytes()
             _ = try await checkedRun("pm trim-caches 999G 2>&1", deviceID: deviceID)
             let after = try await freeKilobytes()
-            let freed = if let before, let after { max(0, after - before) } else { nil }
+            let freed: Int64? = if let before, let after { max(0, after - before) } else { nil }
             let entry = makeEntry(deviceID, kind: .clearCaches, summary: "Cleared app caches; app data was kept", previous: nil, undoable: false)
             journal.entries.append(entry)
             journal.pending.removeValue(forKey: deviceID)

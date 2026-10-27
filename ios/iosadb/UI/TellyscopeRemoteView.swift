@@ -46,7 +46,7 @@ struct TellyscopeRemoteView: View {
                     }
                     HStack {
                         TextField("Type on the TV", text: $text).textInputAutocapitalization(.never).autocorrectionDisabled().onSubmit { sendText() }
-                        Button { Task { await model.sendRemoteKey(67) } } label: { Image(systemName: "delete.left.fill").frame(width: 44, height: 44) }.accessibilityLabel("Backspace on TV")
+                        Button { Task { await press(67) } } label: { Image(systemName: "delete.left.fill").frame(width: 44, height: 44) }.accessibilityLabel("Backspace on TV")
                         Button(action: sendText) { Image(systemName: "paperplane.fill").frame(width: 44, height: 44) }.accessibilityLabel("Send text to TV").disabled(text.isEmpty)
                     }.padding(8).background(TellyscopeStyle.card, in: RoundedRectangle(cornerRadius: 16))
                     Text("Select a text box on the TV, like a search box, then type here.").font(.caption).foregroundStyle(.secondary)
@@ -54,7 +54,7 @@ struct TellyscopeRemoteView: View {
             }.background(TellyscopeStyle.background)
             .navigationTitle("Remote").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button { repeatTask?.cancel(); dismiss() } label: { Image(systemName: "chevron.down").frame(width: 44, height: 44) }.accessibilityLabel("Close remote") }
+                ToolbarItem(placement: .cancellationAction) { Button { repeatTask?.cancel(); Task { await close() } } label: { Image(systemName: "chevron.down").frame(width: 44, height: 44) }.accessibilityLabel("Close remote").disabled(model.isBusy) }
                 ToolbarItemGroup(placement: .primaryAction) {
                     Button { Task { if await model.portScreen(on: !pictureOn) { pictureOn.toggle() } } } label: { Image(systemName: pictureOn ? "tv.slash" : "tv").frame(width: 44, height: 44) }.accessibilityLabel(pictureOn ? "Turn TV picture off" : "Turn TV picture on")
                     Menu {
@@ -63,7 +63,7 @@ struct TellyscopeRemoteView: View {
                     } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
                 }
             }
-            .onDisappear { repeatTask?.cancel() }
+            .onDisappear { repeatTask?.cancel(); if !pictureOn { Task { _ = await model.portScreen(on: true) } } }
             .task {
                 guard !ProcessInfo.processInfo.arguments.contains("-TVADBSimulateConnectedDevice") else { return }
                 await model.loadApplicationsIfNeeded()
@@ -87,17 +87,25 @@ struct TellyscopeRemoteView: View {
         }
     }
     private func remoteKey(_ code: Int, _ icon: String, _ label: String, size: CGFloat = 68, primary: Bool = false) -> some View {
-        Button { Task { await model.sendRemoteKey(code) } } label: {
-            Image(systemName: icon).font(.system(size: 26, weight: .semibold)).foregroundStyle(primary ? TellyscopeStyle.accent : Color.primary)
+        Button { Task { await press(code) } } label: {
+            Image(systemName: icon).font(.system(size: 26, weight: .semibold)).foregroundStyle(primary ? TellyscopeStyle.background : Color.primary)
                 .frame(width: size, height: size).background(primary ? TellyscopeStyle.accent : TellyscopeStyle.tonal, in: Circle())
         }
         .accessibilityLabel(label)
         .onLongPressGesture(minimumDuration: 0.35, perform: {}, onPressingChanged: { pressed in
             repeatTask?.cancel()
             if pressed { repeatTask = Task {
-                do { try await Task.sleep(for: .milliseconds(400)); while !Task.isCancelled { await model.sendRemoteKey(code); try await Task.sleep(for: .milliseconds(120)) } } catch { }
+                do { try await Task.sleep(for: .milliseconds(400)); while !Task.isCancelled { await press(code); try await Task.sleep(for: .milliseconds(120)) } } catch { }
             } }
         })
+    }
+    @MainActor private func press(_ code: Int) async {
+        if !pictureOn { pictureOn = await model.portScreen(on: true); return }
+        await model.sendRemoteKey(code)
+    }
+    @MainActor private func close() async {
+        if !pictureOn { pictureOn = await model.portScreen(on: true) }
+        if pictureOn { dismiss() }
     }
     private func sendText() { let sending = text; Task { if await model.sendRemoteText(sending) { text = "" } } }
 }

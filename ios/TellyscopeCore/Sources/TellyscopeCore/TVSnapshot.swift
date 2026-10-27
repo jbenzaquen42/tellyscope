@@ -142,19 +142,19 @@ public struct TVSnapshotReader {
         ]
         let output = try? await executor.run(commands.map { "\($0) 2>/dev/null" }.joined(separator: "; echo \(Self.advancedSeparator); ") + "; true")
         let parts = output.flatMap { $0.exitCode == 0 ? Self.sections($0.output, count: 7, separator: Self.advancedSeparator) : nil }
-        let uidMap = parts?[1].flatMap(Self.packageUIDs)
-        let traffic = parts?[2].flatMap(Self.traffic)
-        let sockets = parts?[3].flatMap { Self.connections($0, uids: uidMap ?? [:]) }
-        let tlsPort = parts?[5].flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        let uidMap = (parts?[1]).flatMap(Self.packageUIDs)
+        let traffic = (parts?[2]).flatMap(Self.traffic)
+        let sockets = (parts?[3]).flatMap { Self.connections($0, uids: uidMap ?? [:]) }
+        let tlsPort = (parts?[5]).flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
         let ports = Set([5555, adbPort, tlsPort].compactMap { $0 }.filter { $0 > 0 })
         return TVAdvancedSnapshot(
-            processes: parts?[0].flatMap { Self.processes($0, uids: uidMap ?? [:]) },
+            processes: (parts?[0]).flatMap { Self.processes($0, uids: uidMap ?? [:]) },
             packageUIDs: uidMap,
             trafficByUID: traffic,
             connections: sockets,
-            allowedADBKeys: parts?[4].flatMap(Self.allowedKeys),
-            connectedADBClients: parts?[3].flatMap { Self.adbClients($0, ports: ports) },
-            pairedPeripherals: parts?[6].flatMap(Self.pairedBluetooth)
+            allowedADBKeys: (parts?[4]).flatMap(Self.allowedKeys),
+            connectedADBClients: (parts?[3]).flatMap { Self.adbClients($0, ports: ports) },
+            pairedPeripherals: (parts?[6]).flatMap(Self.pairedBluetooth)
         )
     }
 
