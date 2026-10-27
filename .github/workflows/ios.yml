@@ -57,7 +57,7 @@ jobs:
           xcrun simctl boot "$device"
           xcrun simctl bootstatus "$device" -b
           xcrun simctl install "$device" "$RUNNER_TEMP/tellyscope-simulator/Build/Products/Debug-iphonesimulator/TVADB.app"
-          xcrun simctl launch "$device" app.tellyscope.ios -AppleLanguages '(en)' -AppleLocale en_US
+          xcrun simctl launch "$device" app.tellyscope.ios -AppleLanguages '(en)' -AppleLocale en_US -tvadb.autoScan NO
           sleep 3
           mkdir -p ios/dist
           xcrun simctl io "$device" screenshot ios/dist/iphone-13-mini.png

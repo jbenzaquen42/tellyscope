@@ -434,6 +434,7 @@
 					"-lz",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.tellyscope.ios;
+				ARCHS = arm64;
 				PRODUCT_NAME = TVADB;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -465,6 +466,7 @@
 					"-lz",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.tellyscope.ios;
+				ARCHS = arm64;
 				PRODUCT_NAME = TVADB;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
