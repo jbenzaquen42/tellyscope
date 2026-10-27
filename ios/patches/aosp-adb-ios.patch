@@ -1,0 +1,3929 @@
+diff --git a/adb_listeners.cpp b/adb_listeners.cpp
+index c24016f..f811175 100644
+--- a/adb_listeners.cpp
++++ b/adb_listeners.cpp
+@@ -219,6 +219,7 @@ InstallStatus install_listener(const std::string& local_name, const char* connec
+ 
+     int resolved = 0;
+     listener->fd = socket_spec_listen(listener->local_name, error, &resolved);
++    printf("[adb_porting] install_listener: %s, fd: %d\n", listener->local_name.c_str(), listener->fd);
+     if (listener->fd < 0) {
+         return INSTALL_STATUS_CANNOT_BIND;
+     }
+@@ -256,3 +257,21 @@ InstallStatus install_listener(const std::string& local_name, const char* connec
+     listener_list.push_back(std::move(listener));
+     return INSTALL_STATUS_OK;
+ }
++
++void reinstall_all_listeners() EXCLUDES(listener_list_mutex) {
++    std::lock_guard<std::mutex> lock(listener_list_mutex);
++    printf("[adb_porting] reinstall_all_listeners\n");
++    // Print listeners count
++    printf("[adb_porting] listeners count: %zu\n", listener_list.size());
++    for (auto& l : listener_list) {
++        printf("[adb_porting] reinstall_all_listeners: %s\n", l->local_name.c_str());
++        std::string* error = nullptr;
++        int resolved = 0;
++        l->fd = socket_spec_listen(l->local_name, error, &resolved);
++        LOG(INFO) << "+ reinstalled listener: " << l->local_name << ", fd: " << l->fd;
++        if (error) {
++            LOG(ERROR) << "reinstall_all_listeners: " << *error;
++            continue;
++        }
++    }
++}
+\ No newline at end of file
+diff --git a/client/adb_client.cpp b/client/adb_client.cpp
+index 6b20151..05a4aee 100644
+--- a/client/adb_client.cpp
++++ b/client/adb_client.cpp
+@@ -69,7 +69,8 @@ void adb_get_transport(TransportType* type, const char** serial, TransportId* tr
+ 
+ void adb_set_socket_spec(const char* socket_spec) {
+     if (__adb_server_socket_spec) {
+-        LOG(FATAL) << "attempted to reinitialize adb_server_socket_spec " << socket_spec << " (was " << __adb_server_socket_spec << ")";
++        // Porting: prevent abort, which caused by diffrent processes archtiecture, we are now in the same process.
++        // LOG(FATAL) << "attempted to reinitialize adb_server_socket_spec " << socket_spec << " (was " << __adb_server_socket_spec << ")";
+     }
+     __adb_server_socket_spec = socket_spec;
+ }
+@@ -345,10 +346,10 @@ bool adb_check_server_version(std::string* error) {
+     static std::once_flag once;
+     static bool result;
+     static std::string* err;
+-    std::call_once(once, []() {
++    // std::call_once(once, []() {
+         err = new std::string();
+         result = __adb_check_server_version(err);
+-    });
++    // });
+     *error = *err;
+     return result;
+ }
+diff --git a/client/adb_install.cpp b/client/adb_install.cpp
+index 74ef5d2..55998a7 100644
+--- a/client/adb_install.cpp
++++ b/client/adb_install.cpp
+@@ -58,7 +58,7 @@ enum class CmdlineOption { None, Enable, Disable };
+ }
+ 
+ static InstallMode best_install_mode() {
+-    auto&& features = adb_get_feature_set_or_die();
++    auto&& features = adb_get_feature_set_or_die(nullptr, nullptr);
+     if (CanUseFeature(*features, kFeatureCmd)) {
+         return INSTALL_STREAM;
+     }
+@@ -66,12 +66,12 @@ static InstallMode best_install_mode() {
+ }
+ 
+ static bool is_apex_supported() {
+-    auto&& features = adb_get_feature_set_or_die();
++    auto&& features = adb_get_feature_set_or_die(nullptr, nullptr);
+     return CanUseFeature(*features, kFeatureApex);
+ }
+ 
+ static bool is_abb_exec_supported() {
+-    auto&& features = adb_get_feature_set_or_die();
++    auto&& features = adb_get_feature_set_or_die(nullptr, nullptr);
+     return CanUseFeature(*features, kFeatureAbbExec);
+ }
+ 
+@@ -295,7 +295,7 @@ static int install_app_legacy(int argc, const char** argv, bool use_fastdeploy)
+ #endif
+     }
+ 
+-    if (do_sync_push(apk_file, apk_dest.c_str(), false, CompressionType::Any, false, false)) {
++    if (do_sync_push(nullptr, nullptr, apk_file, apk_dest.c_str(), false, CompressionType::Any, false, false)) {
+         result = pm_command(argc, argv);
+         delete_device_file(apk_dest);
+     }
+diff --git a/client/bugreport.cpp b/client/bugreport.cpp
+index 23ecb55..3414946 100644
+--- a/client/bugreport.cpp
++++ b/client/bugreport.cpp
+@@ -296,5 +296,5 @@ int Bugreport::SendShellCommand(const std::string& command, bool disable_shell_p
+ 
+ bool Bugreport::DoSyncPull(const std::vector<const char*>& srcs, const char* dst, bool copy_attrs,
+                            const char* name) {
+-    return do_sync_pull(srcs, dst, copy_attrs, CompressionType::None, name);
++    return do_sync_pull(nullptr, nullptr, srcs, dst, copy_attrs, CompressionType::None, name);
+ }
+diff --git a/client/commandline.cpp b/client/commandline.cpp
+index 6620836..96e7367 100644
+--- a/client/commandline.cpp
++++ b/client/commandline.cpp
+@@ -72,6 +72,8 @@
+ #include "socket_spec.h"
+ #include "sysdeps/chrono.h"
+ 
++#include "adb_porting.h"
++
+ DefaultStandardStreamsCallback DEFAULT_STANDARD_STREAMS_CALLBACK(nullptr, nullptr);
+ 
+ static std::string product_file(const std::string& file) {
+@@ -292,7 +294,7 @@ static void stdin_raw_restore() {
+ }
+ #endif
+ 
+-int read_and_dump_protocol(borrowed_fd fd, StandardStreamsCallbackInterface* callback) {
++int read_and_dump_protocol(char **output_buffer, size_t *output_size, borrowed_fd fd, StandardStreamsCallbackInterface* callback) {
+     // OpenSSH returns 255 on unexpected disconnection.
+     int exit_code = 255;
+     std::unique_ptr<ShellProtocol> protocol = std::make_unique<ShellProtocol>(fd);
+@@ -302,11 +304,13 @@ int read_and_dump_protocol(borrowed_fd fd, StandardStreamsCallbackInterface* cal
+     }
+     while (protocol->Read()) {
+       if (protocol->id() == ShellProtocol::kIdStdout) {
++        capture_write(output_buffer, output_size, protocol->data(), protocol->data_length());
+         if (!callback->OnStdout(protocol->data(), protocol->data_length())) {
+           exit_code = SIGPIPE + 128;
+           break;
+         }
+       } else if (protocol->id() == ShellProtocol::kIdStderr) {
++        capture_write(output_buffer, output_size, protocol->data(), protocol->data_length());
+         if (!callback->OnStderr(protocol->data(), protocol->data_length())) {
+           exit_code = SIGPIPE + 128;
+           break;
+@@ -321,13 +325,13 @@ int read_and_dump_protocol(borrowed_fd fd, StandardStreamsCallbackInterface* cal
+     return exit_code;
+ }
+ 
+-int read_and_dump(borrowed_fd fd, bool use_shell_protocol,
++int read_and_dump(char **output_buffer, size_t *output_size, borrowed_fd fd, bool use_shell_protocol,
+                   StandardStreamsCallbackInterface* callback) {
+     int exit_code = 0;
+     if (fd < 0) return exit_code;
+ 
+     if (use_shell_protocol) {
+-      exit_code = read_and_dump_protocol(fd, callback);
++      exit_code = read_and_dump_protocol(output_buffer, output_size, fd, callback);
+     } else {
+       char raw_buffer[BUFSIZ];
+       char* buffer_ptr = raw_buffer;
+@@ -338,6 +342,7 @@ int read_and_dump(borrowed_fd fd, bool use_shell_protocol,
+         if (length <= 0) {
+           break;
+         }
++        capture_write(output_buffer, output_size, raw_buffer, static_cast<size_t>(length));
+         if (!callback->OnStdout(buffer_ptr, length)) {
+           break;
+         }
+@@ -621,7 +626,7 @@ static std::string ShellServiceString(bool use_shell_protocol,
+ //
+ // On success returns the remote exit code if |use_shell_protocol| is true,
+ // 0 otherwise. On failure returns 1.
+-static int RemoteShell(bool use_shell_protocol, const std::string& type_arg, char escape_char,
++static int RemoteShell(char **output_buffer, size_t *output_size, bool use_shell_protocol, const std::string& type_arg, char escape_char,
+                        bool empty_command, const std::string& service_string) {
+     // Old devices can't handle a service string that's longer than MAX_PAYLOAD_V1.
+     // Use |use_shell_protocol| to determine whether to allow a command longer than that.
+@@ -680,7 +685,7 @@ static int RemoteShell(bool use_shell_protocol, const std::string& type_arg, cha
+ 
+     // TODO: combine read_and_dump with stdin_read_thread to make life simpler?
+     std::thread(stdin_read_thread_loop, args).detach();
+-    int exit_code = read_and_dump(fd, use_shell_protocol);
++    int exit_code = read_and_dump(output_buffer, output_size, fd, use_shell_protocol);
+ 
+     // TODO: properly exit stdin_read_thread_loop and close |fd|.
+ 
+@@ -691,12 +696,15 @@ static int RemoteShell(bool use_shell_protocol, const std::string& type_arg, cha
+     return exit_code;
+ }
+ 
+-static int adb_shell(int argc, const char** argv) {
++static int adb_shell(char **output_buffer, size_t *output_size, int argc, const char** argv) {
+     enum PtyAllocationMode { kPtyAuto, kPtyNo, kPtyYes, kPtyDefinitely };
+ 
+     // Defaults.
+     char escape_char = '~';                                                 // -e
+-    auto&& features = adb_get_feature_set_or_die();
++    auto&& features = adb_get_feature_set_or_die(output_buffer, output_size);
++    if (features == std::nullopt) {
++        return 1;
++    }
+     bool use_shell_protocol = CanUseFeature(*features, kFeatureShell2);     // -x
+     PtyAllocationMode tty = use_shell_protocol ? kPtyAuto : kPtyDefinitely; // -t/-T
+ 
+@@ -712,7 +720,9 @@ static int adb_shell(int argc, const char** argv) {
+         switch (opt) {
+             case 'e':
+                 if (!(strlen(optarg) == 1 || strcmp(optarg, "none") == 0)) {
+-                    error_exit("-e requires a single-character argument or 'none'");
++                    // error_exit("-e requires a single-character argument or 'none'");
++                    capture_printf(output_buffer, output_size, "error: -e requires a single-character argument or 'none'\n");
++                    return 1;
+                 }
+                 escape_char = (strcmp(optarg, "none") == 0) ? 0 : optarg[0];
+                 break;
+@@ -788,14 +798,16 @@ static int adb_shell(int argc, const char** argv) {
+     }
+ 
+     std::string service_string = ShellServiceString(use_shell_protocol, shell_type_arg, command);
+-    return RemoteShell(use_shell_protocol, shell_type_arg, escape_char, command.empty(),
++    return RemoteShell(output_buffer, output_size, use_shell_protocol, shell_type_arg, escape_char, command.empty(),
+                        service_string);
+ }
+ 
+ static int adb_abb(int argc, const char** argv) {
+-    auto&& features = adb_get_feature_set_or_die();
++    auto&& features = adb_get_feature_set_or_die(nullptr, nullptr);
+     if (!CanUseFeature(*features, kFeatureAbb)) {
+-        error_exit("abb is not supported by the device");
++        // error_exit("abb is not supported by the device");
++        capture_printf(nullptr, nullptr, "abb is not supported by the device\n");
++        return 1;
+     }
+ 
+     optind = 1;  // argv[0] is always "abb", so set `optind` appropriately.
+@@ -812,7 +824,7 @@ static int adb_abb(int argc, const char** argv) {
+     D("abb -e 0x%x [%*.s]\n", escape_char, static_cast<int>(service_string.size()),
+       service_string.data());
+ 
+-    return RemoteShell(use_shell_protocol, shell_type_arg, escape_char, empty_command,
++    return RemoteShell(nullptr, nullptr, use_shell_protocol, shell_type_arg, escape_char, empty_command,
+                        service_string);
+ }
+ 
+@@ -822,7 +834,7 @@ static int adb_shell_noinput(int argc, const char** argv) {
+     CHECK_NE(STDIN_FILENO, fd.get());
+     dup2(fd.get(), STDIN_FILENO);
+ #endif
+-    return adb_shell(argc, argv);
++    return adb_shell(nullptr, nullptr, argc, argv);
+ }
+ 
+ static int adb_sideload_legacy(const char* filename, int in_fd, int size) {
+@@ -884,15 +896,17 @@ static int adb_sideload_legacy(const char* filename, int in_fd, int size) {
+ // - When the other side sends "DONEDONE" or "FAILFAIL" instead of a block number, we have done all
+ //   the data transfer.
+ //
+-static int adb_sideload_install(const char* filename, bool rescue_mode) {
++static int adb_sideload_install(char **output_buffer, size_t *output_size, const char* filename, bool rescue_mode) {
+     // TODO: use a LinePrinter instead...
+     struct stat sb;
+     if (stat(filename, &sb) == -1) {
++        capture_printf(output_buffer, output_size, "adb: failed to stat file %s: %s\n", filename, strerror(errno));
+         fprintf(stderr, "adb: failed to stat file %s: %s\n", filename, strerror(errno));
+         return -1;
+     }
+     unique_fd package_fd(adb_open(filename, O_RDONLY));
+     if (package_fd == -1) {
++        capture_printf(output_buffer, output_size, "adb: failed to open file %s: %s\n", filename, strerror(errno));
+         fprintf(stderr, "adb: failed to open file %s: %s\n", filename, strerror(errno));
+         return -1;
+     }
+@@ -903,6 +917,7 @@ static int adb_sideload_install(const char* filename, bool rescue_mode) {
+     std::string error;
+     unique_fd device_fd(adb_connect(service, &error));
+     if (device_fd < 0) {
++        capture_printf(output_buffer, output_size, "adb: sideload connection failed: %s\n", error.c_str());
+         fprintf(stderr, "adb: sideload connection failed: %s\n", error.c_str());
+ 
+         if (rescue_mode) {
+@@ -914,6 +929,7 @@ static int adb_sideload_install(const char* filename, bool rescue_mode) {
+         if (sb.st_size > INT_MAX) {
+             return -1;
+         }
++        capture_printf(output_buffer, output_size, "adb: trying pre-KitKat sideload method...\n");
+         fprintf(stderr, "adb: trying pre-KitKat sideload method...\n");
+         return adb_sideload_legacy(filename, package_fd.get(), static_cast<int>(sb.st_size));
+     }
+@@ -927,6 +943,7 @@ static int adb_sideload_install(const char* filename, bool rescue_mode) {
+     int last_percent = -1;
+     while (true) {
+         if (!ReadFdExactly(device_fd, buf, 8)) {
++            capture_printf(output_buffer, output_size, "adb: failed to read command: %s\n", strerror(errno));
+             fprintf(stderr, "adb: failed to read command: %s\n", strerror(errno));
+             return -1;
+         }
+@@ -934,6 +951,9 @@ static int adb_sideload_install(const char* filename, bool rescue_mode) {
+ 
+         if (strcmp(kMinadbdServicesExitSuccess, buf) == 0 ||
+             strcmp(kMinadbdServicesExitFailure, buf) == 0) {
++            capture_printf(output_buffer, output_size, "\rTotal xfer: %.2fx%*s\n",
++                          static_cast<double>(xfer) / (sb.st_size ? sb.st_size : 1),
++                          static_cast<int>(strlen(filename) + 10), "");
+             printf("\rTotal xfer: %.2fx%*s\n",
+                    static_cast<double>(xfer) / (sb.st_size ? sb.st_size : 1),
+                    static_cast<int>(strlen(filename) + 10), "");
+@@ -946,6 +966,9 @@ static int adb_sideload_install(const char* filename, bool rescue_mode) {
+         int64_t block = strtoll(buf, nullptr, 10);
+         int64_t offset = block * SIDELOAD_HOST_BLOCK_SIZE;
+         if (offset >= static_cast<int64_t>(sb.st_size)) {
++            capture_printf(output_buffer, output_size,
++                "adb: failed to read block %" PRId64 " at offset %" PRId64 ", past end %" PRId64 "\n",
++                block, offset, static_cast<int64_t>(sb.st_size));
+             fprintf(stderr,
+                     "adb: failed to read block %" PRId64 " at offset %" PRId64 ", past end %" PRId64
+                     "\n",
+@@ -959,16 +982,19 @@ static int adb_sideload_install(const char* filename, bool rescue_mode) {
+         }
+ 
+         if (adb_lseek(package_fd, offset, SEEK_SET) != offset) {
++            capture_printf(output_buffer, output_size, "adb: failed to seek to block: %s\n", strerror(errno));
+             fprintf(stderr, "adb: failed to seek to package block: %s\n", strerror(errno));
+             return -1;
+         }
+         if (!ReadFdExactly(package_fd, buf, to_write)) {
++            capture_printf(output_buffer, output_size, "adb: failed to read package block: %s\n", strerror(errno));
+             fprintf(stderr, "adb: failed to read package block: %s\n", strerror(errno));
+             return -1;
+         }
+ 
+         if (!WriteFdExactly(device_fd, buf, to_write)) {
+             adb_status(device_fd, &error);
++            capture_printf(output_buffer, output_size, "adb: failed to write data '%s'\n", error.c_str());
+             fprintf(stderr, "adb: failed to write data '%s' *\n", error.c_str());
+             return -1;
+         }
+@@ -982,6 +1008,7 @@ static int adb_sideload_install(const char* filename, bool rescue_mode) {
+         // transferred ~2.13 (=100/47) times the package size.
+         int percent = static_cast<int>(xfer * 47LL / (sb.st_size ? sb.st_size : 1));
+         if (percent != last_percent) {
++            capture_printf(output_buffer, output_size, "\rserving: '%s'  (~%d%%)    ", filename, percent);
+             printf("\rserving: '%s'  (~%d%%)    ", filename, percent);
+             fflush(stdout);
+             last_percent = percent;
+@@ -1143,7 +1170,7 @@ int send_shell_command(const std::string& command, bool disable_shell_protocol,
+         }
+     }
+ 
+-    return read_and_dump(fd.get(), use_shell_protocol, callback);
++    return read_and_dump(nullptr, nullptr, fd.get(), use_shell_protocol, callback);
+ }
+ 
+ static int logcat(int argc, const char** argv) {
+@@ -1364,7 +1391,7 @@ static int adb_connect_command(const std::string& command, TransportId* transpor
+         fprintf(stderr, "error: %s\n", error.c_str());
+         return 1;
+     }
+-    read_and_dump(fd, false, callback);
++    read_and_dump(nullptr, nullptr, fd, false, callback);
+     return 0;
+ }
+ 
+@@ -1467,11 +1494,14 @@ static int adb_connect_command_bidirectional(const std::string& command) {
+     return 0;
+ }
+ 
+-const std::optional<FeatureSet>& adb_get_feature_set_or_die(void) {
++const std::optional<FeatureSet>& adb_get_feature_set_or_die(char** out_buf, size_t* out_buf_size) {
++    static const std::optional<FeatureSet> empty_features;
+     std::string error;
+     const std::optional<FeatureSet>& features = adb_get_feature_set(&error);
+     if (!features) {
+-        error_exit("%s", error.c_str());
++        // error_exit("%s", error.c_str());
++        capture_printf(out_buf, out_buf_size, "%s\n", error.c_str());
++        return empty_features;
+     }
+     return features;
+ }
+@@ -1481,7 +1511,7 @@ const std::optional<FeatureSet>& adb_get_feature_set_or_die(void) {
+ // but they were all moved from adbd to external binaries in the
+ // same release.
+ static int process_remount_or_verity_service(const int argc, const char** argv) {
+-    auto&& features = adb_get_feature_set_or_die();
++    auto&& features = adb_get_feature_set_or_die(nullptr, nullptr);
+     if (CanUseFeature(*features, kFeatureRemountShell)) {
+         std::vector<const char*> args = {"shell"};
+         args.insert(args.cend(), argv, argv + argc);
+@@ -1494,14 +1524,15 @@ static int process_remount_or_verity_service(const int argc, const char** argv)
+     }
+ }
+ 
+-static int adb_query_command(const std::string& command) {
++static int adb_query_command(char **output_buffer, size_t *output_size, const std::string& command) {
+     std::string result;
+     std::string error;
+     if (!adb_query(command, &result, &error)) {
+         fprintf(stderr, "error: %s\n", error.c_str());
+         return 1;
+     }
+-    printf("%s\n", result.c_str());
++    // printf("%s\n", result.c_str());
++    capture_printf(output_buffer, output_size, "%s\n", result.c_str());
+     return 0;
+ }
+ 
+@@ -1538,7 +1569,7 @@ static bool _is_valid_os_fd(int fd) {
+ }
+ 
+ bool forward_dest_is_featured(const std::string& dest, std::string* error) {
+-    auto features = adb_get_feature_set_or_die();
++    auto features = adb_get_feature_set_or_die(nullptr, nullptr);
+ 
+     if (android::base::StartsWith(dest, "dev-raw:")) {
+         if (!CanUseFeature(*features, kFeatureDevRaw)) {
+@@ -1550,7 +1581,7 @@ bool forward_dest_is_featured(const std::string& dest, std::string* error) {
+     return true;
+ }
+ 
+-int adb_commandline(int argc, const char** argv) {
++int adb_commandline(char** out_buf, size_t* out_buf_size, int argc, const char** argv) {
+     bool no_daemon = false;
+     bool is_daemon = false;
+     bool is_server = false;
+@@ -1581,17 +1612,26 @@ int adb_commandline(int argc, const char** argv) {
+             /* this is a special flag used only when the ADB client launches the ADB Server */
+             is_daemon = true;
+         } else if (!strcmp(argv[0], "--reply-fd")) {
+-            if (argc < 2) error_exit("--reply-fd requires an argument");
++            if (argc < 2) {
++                // error_exit("--reply-fd requires an argument");
++                capture_printf(out_buf, out_buf_size, "--reply-fd requires an argument\n");
++                return 1;
++            }
+             const char* reply_fd_str = argv[1];
+             --argc;
+             ++argv;
+             ack_reply_fd = strtol(reply_fd_str, nullptr, 10);
+             if (!_is_valid_ack_reply_fd(ack_reply_fd)) {
+                 fprintf(stderr, "adb: invalid reply fd \"%s\"\n", reply_fd_str);
++                capture_printf(out_buf, out_buf_size, "adb: invalid reply fd \"%s\"\n", reply_fd_str);
+                 return 1;
+             }
+         } else if (!strcmp(argv[0], "--one-device")) {
+-            if (argc < 2) error_exit("--one-device requires an argument");
++            if (argc < 2) {
++                // error_exit("--one-device requires an argument");
++                capture_printf(out_buf, out_buf_size, "--one-device requires an argument\n");
++                return 1;
++            }
+             one_device_str = argv[1];
+             --argc;
+             ++argv;
+@@ -1599,7 +1639,11 @@ int adb_commandline(int argc, const char** argv) {
+             if (isdigit(argv[0][2])) {
+                 serial = argv[0] + 2;
+             } else {
+-                if (argc < 2 || argv[0][2] != '\0') error_exit("-s requires an argument");
++                if (argc < 2 || argv[0][2] != '\0') {
++                    // error_exit("-s requires an argument");
++                    capture_printf(out_buf, out_buf_size, "-s requires an argument\n");
++                    return 1;
++                }
+                 serial = argv[1];
+                 --argc;
+                 ++argv;
+@@ -1609,14 +1653,20 @@ int adb_commandline(int argc, const char** argv) {
+             if (isdigit(argv[0][2])) {
+                 id = argv[0] + 2;
+             } else {
+-                if (argc < 2 || argv[0][2] != '\0') error_exit("-t requires an argument");
++                if (argc < 2 || argv[0][2] != '\0') {
++                    // error_exit("-t requires an argument");
++                    capture_printf(out_buf, out_buf_size, "-t requires an argument\n");
++                    return 1;
++                }
+                 id = argv[1];
+                 --argc;
+                 ++argv;
+             }
+             transport_id = strtoll(id, const_cast<char**>(&id), 10);
+             if (*id != '\0') {
+-                error_exit("invalid transport id");
++                // error_exit("invalid transport id");
++                capture_printf(out_buf, out_buf_size, "invalid transport id\n");
++                return 1;
+             }
+         } else if (!strcmp(argv[0], "-d")) {
+             transport_type = kTransportUsb;
+@@ -1626,7 +1676,11 @@ int adb_commandline(int argc, const char** argv) {
+             gListenAll = true;
+         } else if (!strncmp(argv[0], "-H", 2)) {
+             if (argv[0][2] == '\0') {
+-                if (argc < 2) error_exit("-H requires an argument");
++                if (argc < 2) {
++                    // error_exit("-H requires an argument");
++                    capture_printf(out_buf, out_buf_size, "-H requires an argument\n");
++                    return 1;
++                }
+                 server_host_str = argv[1];
+                 --argc;
+                 ++argv;
+@@ -1635,7 +1689,11 @@ int adb_commandline(int argc, const char** argv) {
+             }
+         } else if (!strncmp(argv[0], "-P", 2)) {
+             if (argv[0][2] == '\0') {
+-                if (argc < 2) error_exit("-P requires an argument");
++                if (argc < 2) {
++                    // error_exit("-P requires an argument");
++                    capture_printf(out_buf, out_buf_size, "-P requires an argument\n");
++                    return 1;
++                }
+                 server_port_str = argv[1];
+                 --argc;
+                 ++argv;
+@@ -1643,7 +1701,11 @@ int adb_commandline(int argc, const char** argv) {
+                 server_port_str = argv[0] + 2;
+             }
+         } else if (!strcmp(argv[0], "-L")) {
+-            if (argc < 2) error_exit("-L requires an argument");
++            if (argc < 2) {
++                // error_exit("-L requires an argument");
++                capture_printf(out_buf, out_buf_size, "-L requires an argument\n");
++                return 1;
++            }
+             server_socket_str = argv[1];
+             --argc;
+             ++argv;
+@@ -1658,7 +1720,9 @@ int adb_commandline(int argc, const char** argv) {
+     }
+ 
+     if ((server_host_str || server_port_str) && server_socket_str) {
+-        error_exit("-L is incompatible with -H or -P");
++        // error_exit("-L is incompatible with -H or -P");
++        capture_printf(out_buf, out_buf_size, "-L is incompatible with -H or -P\n");
++        return 1;
+     }
+ 
+     // If -L, -H, or -P are specified, ignore environment variables.
+@@ -1675,10 +1739,15 @@ int adb_commandline(int argc, const char** argv) {
+         server_port_str = server_port_str ? server_port_str : getenv("ANDROID_ADB_SERVER_PORT");
+         if (server_port_str && strlen(server_port_str) > 0) {
+             if (!android::base::ParseInt(server_port_str, &server_port, 1, 65535)) {
+-                error_exit(
+-                        "$ANDROID_ADB_SERVER_PORT must be a positive number less than 65535: "
+-                        "got \"%s\"",
+-                        server_port_str);
++                // error_exit(
++                //         "$ANDROID_ADB_SERVER_PORT must be a positive number less than 65535: "
++                //         "got \"%s\"",
++                //         server_port_str);
++                capture_printf(out_buf, out_buf_size,
++                    "$ANDROID_ADB_SERVER_PORT must be a positive number less than 65535: "
++                    "got \"%s\"\n",
++                    server_port_str);
++                return 1;
+             }
+         }
+ 
+@@ -1699,7 +1768,9 @@ int adb_commandline(int argc, const char** argv) {
+     bool server_start =
+             is_daemon || is_server || (argc > 0 && strcmp(argv[0], "start-server") == 0);
+     if (one_device_str && !server_start) {
+-        error_exit("--one-device is only allowed when starting a server.");
++        // error_exit("--one-device is only allowed when starting a server.");
++        capture_printf(out_buf, out_buf_size, "--one-device is only allowed when starting a server.\n");
++        return 1;
+     }
+ 
+     adb_set_one_device(one_device_str);
+@@ -1716,6 +1787,7 @@ int adb_commandline(int argc, const char** argv) {
+         if (no_daemon || is_daemon) {
+             if (is_daemon && (ack_reply_fd == -1)) {
+                 fprintf(stderr, "reply fd for adb server to client communication not specified.\n");
++                capture_printf(out_buf, out_buf_size, "reply fd for adb server to client communication not specified.\n");
+                 return 1;
+             }
+             r = adb_server_main(is_daemon, server_socket_str, one_device_str, ack_reply_fd);
+@@ -1724,6 +1796,7 @@ int adb_commandline(int argc, const char** argv) {
+         }
+         if (r) {
+             fprintf(stderr,"* could not start server *\n");
++            capture_printf(out_buf, out_buf_size, "* could not start server *\n");
+         }
+         return r;
+     }
+@@ -1760,47 +1833,70 @@ int adb_commandline(int argc, const char** argv) {
+         } else if (argc == 2 && !strcmp(argv[1], "-l")) {
+             listopt = argv[1];
+         } else {
+-            error_exit("adb devices [-l]");
++            // error_exit("adb devices [-l]");
++            capture_printf(out_buf, out_buf_size, "adb devices [-l]\n");
++            return 1;
+         }
+ 
+         std::string query = android::base::StringPrintf("host:%s%s", argv[0], listopt);
+         std::string error;
+         if (!adb_check_server_version(&error)) {
+-            error_exit("failed to check server version: %s", error.c_str());
++            // error_exit("failed to check server version: %s", error.c_str());
++            capture_printf(out_buf, out_buf_size, "failed to check server version: %s\n", error.c_str());
++            return 1;
+         }
+         printf("List of devices attached\n");
+-        return adb_query_command(query);
++        capture_printf(out_buf, out_buf_size, "List of devices attached\n");
++        return adb_query_command(out_buf, out_buf_size, query);
+     } else if (!strcmp(argv[0], "transport-id")) {
+         TransportId transport_id;
+         std::string error;
+         unique_fd fd(adb_connect(&transport_id, "host:features", &error, true));
+         if (fd == -1) {
+-            error_exit("%s", error.c_str());
++            // error_exit("%s", error.c_str());
++            capture_printf(out_buf, out_buf_size, "%s\n", error.c_str());
++            return 1;
+         }
+         printf("%" PRIu64 "\n", transport_id);
++        capture_printf(out_buf, out_buf_size, "%" PRIu64 "\n", transport_id);
+         return 0;
+     } else if (!strcmp(argv[0], "connect")) {
+-        if (argc != 2) error_exit("usage: adb connect HOST[:PORT]");
++        if (argc != 2) {
++            // error_exit("usage: adb connect HOST[:PORT]");
++            capture_printf(out_buf, out_buf_size, "usage: adb connect HOST[:PORT]\n");
++            return 1;
++        }
+ 
+         std::string query = android::base::StringPrintf("host:connect:%s", argv[1]);
+-        return adb_query_command(query);
++        return adb_query_command(out_buf, out_buf_size, query);
+     } else if (!strcmp(argv[0], "disconnect")) {
+-        if (argc > 2) error_exit("usage: adb disconnect [HOST[:PORT]]");
++        if (argc > 2) {
++            // error_exit("usage: adb disconnect [HOST[:PORT]]");
++            capture_printf(out_buf, out_buf_size, "usage: adb disconnect [HOST[:PORT]]\n");
++            return 1;
++        }
+ 
+         std::string query = android::base::StringPrintf("host:disconnect:%s",
+                                                         (argc == 2) ? argv[1] : "");
+-        return adb_query_command(query);
++        return adb_query_command(out_buf, out_buf_size, query);
+     } else if (!strcmp(argv[0], "abb")) {
+         return adb_abb(argc, argv);
+     } else if (!strcmp(argv[0], "pair")) {
+-        if (argc < 2 || argc > 3) error_exit("usage: adb pair HOST[:PORT] [PAIRING CODE]");
++        if (argc < 2 || argc > 3) {
++            error_exit("usage: adb pair HOST[:PORT] [PAIRING CODE]");
++            capture_printf(out_buf, out_buf_size, "usage: adb pair HOST[:PORT] [PAIRING CODE]\n");
++            return 1;
++        }
+ 
+         std::string password;
+         if (argc == 2) {
+             printf("Enter pairing code: ");
++            capture_printf(out_buf, out_buf_size, "Enter pairing code: ");
+             fflush(stdout);
+             if (!std::getline(std::cin, password) || password.empty()) {
+-                error_exit("No pairing code provided");
++                // error_exit("No pairing code provided");
++                capture_printf(out_buf, out_buf_size, "No pairing code provided\n");
++                return 1;
+             }
+         } else {
+             password = argv[2];
+@@ -1808,15 +1904,19 @@ int adb_commandline(int argc, const char** argv) {
+         std::string query =
+                 android::base::StringPrintf("host:pair:%s:%s", password.c_str(), argv[1]);
+ 
+-        return adb_query_command(query);
++        return adb_query_command(out_buf, out_buf_size, query);
+     } else if (!strcmp(argv[0], "emu")) {
+         return adb_send_emulator_command(argc, argv, serial);
+     } else if (!strcmp(argv[0], "shell")) {
+-        return adb_shell(argc, argv);
++        return adb_shell(out_buf, out_buf_size, argc, argv);
+     } else if (!strcmp(argv[0], "exec-in") || !strcmp(argv[0], "exec-out")) {
+         int exec_in = !strcmp(argv[0], "exec-in");
+ 
+-        if (argc < 2) error_exit("usage: adb %s command", argv[0]);
++        if (argc < 2) {
++            // error_exit("usage: adb %s command", argv[0]);
++            capture_printf(out_buf, out_buf_size, "usage: adb %s command\n", argv[0]);
++            return 1;
++        }
+ 
+         std::string cmd = "exec:";
+         cmd += argv[1];
+@@ -1830,6 +1930,7 @@ int adb_commandline(int argc, const char** argv) {
+         unique_fd fd(adb_connect(cmd, &error));
+         if (fd < 0) {
+             fprintf(stderr, "error: %s\n", error.c_str());
++            capture_printf(out_buf, out_buf_size, "error: %s\n", error.c_str());
+             return -1;
+         }
+ 
+@@ -1842,8 +1943,12 @@ int adb_commandline(int argc, const char** argv) {
+     } else if (!strcmp(argv[0], "kill-server")) {
+         return adb_kill_server() ? 0 : 1;
+     } else if (!strcmp(argv[0], "sideload")) {
+-        if (argc != 2) error_exit("sideload requires an argument");
+-        if (adb_sideload_install(argv[1], false /* rescue_mode */)) {
++        if (argc != 2) {
++            // error_exit("sideload requires an argument");
++            capture_printf(out_buf, out_buf_size, "sideload requires an argument\n");
++            return 1;
++        }
++        if (adb_sideload_install(out_buf, out_buf_size, argv[1], false /* rescue_mode */)) {
+             return 1;
+         } else {
+             return 0;
+@@ -1853,7 +1958,11 @@ int adb_commandline(int argc, const char** argv) {
+         // adb rescue getprop <prop>
+         // adb rescue install <filename>
+         // adb rescue wipe userdata
+-        if (argc < 2) error_exit("rescue requires at least one argument");
++        if (argc < 2) {
++            // error_exit("rescue requires at least one argument");
++            capture_printf(out_buf, out_buf_size, "rescue requires at least one argument\n");
++            return 1;
++        }
+         if (!strcmp(argv[1], "getprop")) {
+             if (argc == 2) {
+                 return adb_connect_command("rescue-getprop:");
+@@ -1862,26 +1971,42 @@ int adb_commandline(int argc, const char** argv) {
+                 return adb_connect_command(
+                         android::base::StringPrintf("rescue-getprop:%s", argv[2]));
+             }
+-            error_exit("invalid rescue getprop arguments");
++            // error_exit("invalid rescue getprop arguments");
++            capture_printf(out_buf, out_buf_size, "invalid rescue getprop arguments\n");
++            return 1;
+         } else if (!strcmp(argv[1], "install")) {
+-            if (argc != 3) error_exit("rescue install requires two arguments");
+-            if (adb_sideload_install(argv[2], true /* rescue_mode */) != 0) {
++            if (argc != 3) {
++                // error_exit("rescue install requires two arguments");
++                capture_printf(out_buf, out_buf_size, "rescue install requires two arguments\n");
++                return 1;
++            }
++            if (adb_sideload_install(out_buf, out_buf_size, argv[2], true /* rescue_mode */) != 0) {
+                 return 1;
+             }
+         } else if (!strcmp(argv[1], "wipe")) {
+             if (argc != 3 || strcmp(argv[2], "userdata") != 0) {
+-                error_exit("invalid rescue wipe arguments");
++                // error_exit("invalid rescue wipe arguments");
++                capture_printf(out_buf, out_buf_size, "invalid rescue wipe arguments\n");
++                return 1;
+             }
+             return adb_wipe_devices();
+         } else {
+-            error_exit("invalid rescue argument");
++            // error_exit("invalid rescue argument");
++            capture_printf(out_buf, out_buf_size, "invalid rescue argument\n");
++            return 1;
+         }
+         return 0;
+     } else if (!strcmp(argv[0], "tcpip")) {
+-        if (argc != 2) error_exit("tcpip requires an argument");
++        if (argc != 2) {
++            // error_exit("tcpip requires an argument");
++            capture_printf(out_buf, out_buf_size, "tcpip requires an argument\n");
++            return 1;
++        }
+         int port;
+         if (!android::base::ParseInt(argv[1], &port, 1, 65535)) {
+-            error_exit("tcpip: invalid port: %s", argv[1]);
++            // error_exit("tcpip: invalid port: %s", argv[1]);
++            capture_printf(out_buf, out_buf_size, "tcpip: invalid port: %s\n", argv[1]);
++            return 1;
+         }
+         return adb_connect_command(android::base::StringPrintf("tcpip:%d", port));
+     } else if (!strcmp(argv[0], "remount") || !strcmp(argv[0], "disable-verity") ||
+@@ -1908,7 +2033,11 @@ int adb_commandline(int argc, const char** argv) {
+     } else if (!strcmp(argv[0], "forward") || !strcmp(argv[0], "reverse")) {
+         bool reverse = !strcmp(argv[0], "reverse");
+         --argc;
+-        if (argc < 1) error_exit("%s requires an argument", argv[0]);
++        if (argc < 1) {
++            // error_exit("%s requires an argument", argv[0]);
++            capture_printf(out_buf, out_buf_size, "%s requires an argument\n", argv[0]);
++            return 1;
++        }
+         ++argv;
+ 
+         // Determine the <host-prefix> for this command.
+@@ -1921,25 +2050,45 @@ int adb_commandline(int argc, const char** argv) {
+ 
+         std::string cmd, error_message;
+         if (strcmp(argv[0], "--list") == 0) {
+-            if (argc != 1) error_exit("--list doesn't take any arguments");
+-            return adb_query_command(host_prefix + "list-forward");
++            if (argc != 1) {
++                // error_exit("--list doesn't take any arguments");
++                capture_printf(out_buf, out_buf_size, "--list doesn't take any arguments\n");
++                return 1;
++            }
++            return adb_query_command(out_buf, out_buf_size, host_prefix + "list-forward");
+         } else if (strcmp(argv[0], "--remove-all") == 0) {
+-            if (argc != 1) error_exit("--remove-all doesn't take any arguments");
++            if (argc != 1) {
++                // error_exit("--remove-all doesn't take any arguments");
++                capture_printf(out_buf, out_buf_size, "--remove-all doesn't take any arguments\n");
++                return 1;
++            }
+             cmd = "killforward-all";
+         } else if (strcmp(argv[0], "--remove") == 0) {
+             // forward --remove <local>
+-            if (argc != 2) error_exit("--remove requires an argument");
++            if (argc != 2) {
++                // error_exit("--remove requires an argument");
++                capture_printf(out_buf, out_buf_size, "--remove requires an argument\n");
++                return 1;
++            }
+             cmd = std::string("killforward:") + argv[1];
+         } else if (strcmp(argv[0], "--no-rebind") == 0) {
+             // forward --no-rebind <local> <remote>
+-            if (argc != 3) error_exit("--no-rebind takes two arguments");
++            if (argc != 3) {
++                // error_exit("--no-rebind takes two arguments");
++                capture_printf(out_buf, out_buf_size, "--no-rebind takes two arguments\n");
++                return 1;
++            }
+             if (forward_targets_are_valid(argv[1], argv[2], &error_message) &&
+                 forward_dest_is_featured(argv[2], &error_message)) {
+                 cmd = std::string("forward:norebind:") + argv[1] + ";" + argv[2];
+             }
+         } else {
+             // forward <local> <remote>
+-            if (argc != 2) error_exit("forward takes two arguments");
++            if (argc != 2) {
++                // error_exit("forward takes two arguments");
++                capture_printf(out_buf, out_buf_size, "forward takes two arguments\n");
++                return 1;
++            }
+             if (forward_targets_are_valid(argv[0], argv[1], &error_message) &&
+                 forward_dest_is_featured(argv[1], &error_message)) {
+                 cmd = std::string("forward:") + argv[0] + ";" + argv[1];
+@@ -1947,50 +2096,76 @@ int adb_commandline(int argc, const char** argv) {
+         }
+ 
+         if (!error_message.empty()) {
+-            error_exit("error: %s", error_message.c_str());
++            // error_exit("error: %s", error_message.c_str());
++            capture_printf(out_buf, out_buf_size, "error: %s\n", error_message.c_str());
++            return 1;
+         }
+ 
+         unique_fd fd(adb_connect(nullptr, host_prefix + cmd, &error_message, true));
+         if (fd < 0 || !adb_status(fd.get(), &error_message)) {
+-            error_exit("error: %s", error_message.c_str());
++            // error_exit("error: %s", error_message.c_str());
++            capture_printf(out_buf, out_buf_size, "error: %s\n", error_message.c_str());
++            return 1;
+         }
+ 
+         // Server or device may optionally return a resolved TCP port number.
+         std::string resolved_port;
+         if (ReadProtocolString(fd, &resolved_port, &error_message) && !resolved_port.empty()) {
+             printf("%s\n", resolved_port.c_str());
++            capture_printf(out_buf, out_buf_size, "%s\n", resolved_port.c_str());
+         }
+ 
+         ReadOrderlyShutdown(fd);
+         return 0;
+     } else if (!strcmp(argv[0], "mdns")) {
+         --argc;
+-        if (argc < 1) error_exit("mdns requires an argument");
++        if (argc < 1) {
++            // error_exit("mdns requires an argument");
++            capture_printf(out_buf, out_buf_size, "mdns requires an argument\n");
++            return 1;
++        }
+         ++argv;
+ 
+         std::string error;
+         if (!adb_check_server_version(&error)) {
+-            error_exit("failed to check server version: %s", error.c_str());
++            // error_exit("failed to check server version: %s", error.c_str());
++            capture_printf(out_buf, out_buf_size, "failed to check server version: %s\n", error.c_str());
++            return 1;
+         }
+ 
+         std::string query = "host:mdns:";
+         if (!strcmp(argv[0], "check")) {
+-            if (argc != 1) error_exit("mdns %s doesn't take any arguments", argv[0]);
++            if (argc != 1) {
++                // error_exit("mdns %s doesn't take any arguments", argv[0]);
++                capture_printf(out_buf, out_buf_size, "mdns %s doesn't take any arguments\n", argv[0]);
++                return 1;
++            }
+             query += "check";
+         } else if (!strcmp(argv[0], "services")) {
+-            if (argc != 1) error_exit("mdns %s doesn't take any arguments", argv[0]);
++            if (argc != 1) {
++                // error_exit("mdns %s doesn't take any arguments", argv[0]);
++                capture_printf(out_buf, out_buf_size, "mdns %s doesn't take any arguments\n", argv[0]);
++                return 1;
++            }
+             query += "services";
+             printf("List of discovered mdns services\n");
++            capture_printf(out_buf, out_buf_size, "List of discovered mdns services\n");
+         } else {
+-            error_exit("unknown mdns command [%s]", argv[0]);
++            // error_exit("unknown mdns command [%s]", argv[0]);
++            capture_printf(out_buf, out_buf_size, "unknown mdns command [%s]\n", argv[0]);
++            return 1;
+         }
+ 
+-        return adb_query_command(query);
++        return adb_query_command(out_buf, out_buf_size, query);
+     }
+     /* do_sync_*() commands */
+     else if (!strcmp(argv[0], "ls")) {
+-        if (argc != 2) error_exit("ls requires an argument");
+-        return do_sync_ls(argv[1]) ? 0 : 1;
++        if (argc != 2) {
++            // error_exit("ls requires an argument");
++            capture_printf(out_buf, out_buf_size, "ls requires an argument\n");
++            return 1;
++        }
++        return do_sync_ls(out_buf, out_buf_size, argv[1]) ? 0 : 1;
+     } else if (!strcmp(argv[0], "push")) {
+         bool copy_attrs = false;
+         bool sync = false;
+@@ -2003,10 +2178,12 @@ int adb_commandline(int argc, const char** argv) {
+         parse_push_pull_args(&argv[1], argc - 1, &srcs, &dst, &copy_attrs, &sync, &quiet,
+                              &compression, &dry_run);
+         if (srcs.empty() || !dst) {
+-            error_exit("push requires <source> and <destination> arguments");
++            // error_exit("push requires <source> and <destination> arguments");
++            capture_printf(out_buf, out_buf_size, "push requires <source> and <destination> arguments\n");
++            return 1;
+         }
+ 
+-        return do_sync_push(srcs, dst, sync, compression, dry_run, quiet) ? 0 : 1;
++        return do_sync_push(out_buf, out_buf_size, srcs, dst, sync, compression, dry_run, quiet) ? 0 : 1;
+     } else if (!strcmp(argv[0], "pull")) {
+         bool copy_attrs = false;
+         bool quiet = false;
+@@ -2016,19 +2193,39 @@ int adb_commandline(int argc, const char** argv) {
+ 
+         parse_push_pull_args(&argv[1], argc - 1, &srcs, &dst, &copy_attrs, nullptr, &quiet,
+                              &compression, nullptr);
+-        if (srcs.empty()) error_exit("pull requires an argument");
+-        return do_sync_pull(srcs, dst, copy_attrs, compression, nullptr, quiet) ? 0 : 1;
++        if (srcs.empty()) {
++            // error_exit("pull requires an argument");
++            capture_printf(out_buf, out_buf_size, "pull requires an argument\n");
++            return 1;
++        }
++        return do_sync_pull(out_buf, out_buf_size, srcs, dst, copy_attrs, compression, nullptr, quiet) ? 0 : 1;
+     } else if (!strcmp(argv[0], "install")) {
+-        if (argc < 2) error_exit("install requires an argument");
++        if (argc < 2) {
++            // error_exit("install requires an argument");
++            capture_printf(out_buf, out_buf_size, "install requires an argument\n");
++            return 1;
++        }
+         return install_app(argc, argv);
+     } else if (!strcmp(argv[0], "install-multiple")) {
+-        if (argc < 2) error_exit("install-multiple requires an argument");
++        if (argc < 2) {
++            // error_exit("install-multiple requires an argument");
++            capture_printf(out_buf, out_buf_size, "install-multiple requires an argument\n");
++            return 1;
++        }
+         return install_multiple_app(argc, argv);
+     } else if (!strcmp(argv[0], "install-multi-package")) {
+-        if (argc < 2) error_exit("install-multi-package requires an argument");
++        if (argc < 2) {
++            // error_exit("install-multi-package requires an argument");
++            capture_printf(out_buf, out_buf_size, "install-multi-package requires an argument\n");
++            return 1;
++        }
+         return install_multi_package(argc, argv);
+     } else if (!strcmp(argv[0], "uninstall")) {
+-        if (argc < 2) error_exit("uninstall requires an argument");
++        if (argc < 2) {
++            // error_exit("uninstall requires an argument");
++            capture_printf(out_buf, out_buf_size, "uninstall requires an argument\n");
++            return 1;
++        }
+         return uninstall_app(argc, argv);
+     } else if (!strcmp(argv[0], "sync")) {
+         std::string src;
+@@ -2060,7 +2257,9 @@ int adb_commandline(int argc, const char** argv) {
+                     quiet = true;
+                     break;
+                 default:
+-                    error_exit("usage: adb sync [-l] [-n]  [-z ALGORITHM] [-Z] [-q] [PARTITION]");
++                    // error_exit("usage: adb sync [-l] [-n]  [-z ALGORITHM] [-Z] [-q] [PARTITION]");
++                    capture_printf(out_buf, out_buf_size, "usage: adb sync [-l] [-n]  [-z ALGORITHM] [-Z] [-q] [PARTITION]\n");
++                    return 1;
+             }
+         }
+ 
+@@ -2069,7 +2268,9 @@ int adb_commandline(int argc, const char** argv) {
+         } else if (optind + 1 == argc) {
+             src = argv[optind];
+         } else {
+-            error_exit("usage: adb sync [-l] [-n] [-z ALGORITHM] [-Z] [-q] [PARTITION]");
++            // error_exit("usage: adb sync [-l] [-n] [-z ALGORITHM] [-Z] [-q] [PARTITION]");
++            capture_printf(out_buf, out_buf_size, "usage: adb sync [-l] [-n] [-z ALGORITHM] [-Z] [-q] [PARTITION]\n");
++            return 1;
+         }
+ 
+         std::vector<std::string> partitions{"data",   "odm",        "oem",   "product",
+@@ -2080,18 +2281,22 @@ int adb_commandline(int argc, const char** argv) {
+                 std::string src_dir{product_file(partition)};
+                 if (!directory_exists(src_dir)) continue;
+                 found = true;
+-                if (!do_sync_sync(src_dir, "/" + partition, list_only, compression, dry_run, quiet)) {
++                if (!do_sync_sync(out_buf, out_buf_size, src_dir, "/" + partition, list_only, compression, dry_run, quiet)) {
+                     return 1;
+                 }
+             }
+         }
+-        if (!found) error_exit("don't know how to sync %s partition", src.c_str());
++        if (!found) {
++            // error_exit("don't know how to sync %s partition", src.c_str());
++            capture_printf(out_buf, out_buf_size, "don't know how to sync %s partition\n", src.c_str());
++            return 1;
++        }
+         return 0;
+     }
+     /* passthrough commands */
+     else if (!strcmp(argv[0], "get-state") || !strcmp(argv[0], "get-serialno") ||
+              !strcmp(argv[0], "get-devpath")) {
+-        return adb_query_command(format_host_command(argv[0]));
++        return adb_query_command(out_buf, out_buf_size, format_host_command(argv[0]));
+     }
+     /* other commands */
+     else if (!strcmp(argv[0], "logcat") || !strcmp(argv[0], "lolcat") ||
+@@ -2102,6 +2307,7 @@ int adb_commandline(int argc, const char** argv) {
+         const int result = adb_connect("host:start-server", &error);
+         if (result < 0) {
+             fprintf(stderr, "error: %s\n", error.c_str());
++            capture_printf(out_buf, out_buf_size, "error: %s\n", error.c_str());
+         }
+         return result;
+     } else if (!strcmp(argv[0], "backup")) {
+@@ -2109,21 +2315,31 @@ int adb_commandline(int argc, const char** argv) {
+     } else if (!strcmp(argv[0], "restore")) {
+         return restore(argc, argv);
+     } else if (!strcmp(argv[0], "keygen")) {
+-        if (argc != 2) error_exit("keygen requires an argument");
++        if (argc != 2) {
++            // error_exit("keygen requires an argument");
++            capture_printf(out_buf, out_buf_size, "keygen requires an argument\n");
++            return 1;
++        }
+         // Always print key generation information for keygen command.
+         adb_trace_enable(AUTH);
+         return adb_auth_keygen(argv[1]);
+     } else if (!strcmp(argv[0], "pubkey")) {
+-        if (argc != 2) error_exit("pubkey requires an argument");
++        if (argc != 2) {
++            // error_exit("pubkey requires an argument");
++            capture_printf(out_buf, out_buf_size, "pubkey requires an argument\n");
++            return 1;
++        }
+         return adb_auth_pubkey(argv[1]);
+     } else if (!strcmp(argv[0], "jdwp")) {
+         return adb_connect_command("jdwp");
+     } else if (!strcmp(argv[0], "track-jdwp")) {
+         return adb_connect_command("track-jdwp");
+     } else if (!strcmp(argv[0], "track-app")) {
+-        auto&& features = adb_get_feature_set_or_die();
++        auto&& features = adb_get_feature_set_or_die(out_buf, out_buf_size);
+         if (!CanUseFeature(*features, kFeatureTrackApp)) {
+-            error_exit("track-app is not supported by the device");
++            // error_exit("track-app is not supported by the device");
++            capture_printf(out_buf, out_buf_size, "track-app is not supported by the device\n");
++            return 1;
+         }
+         TrackAppStreamsCallback callback;
+         if (argc == 1) {
+@@ -2135,7 +2351,9 @@ int adb_commandline(int argc, const char** argv) {
+                 return adb_connect_command("track-app", nullptr, &callback);
+             }
+         } else {
+-            error_exit("usage: adb track-app [--proto-binary][--proto-text]");
++            // error_exit("usage: adb track-app [--proto-binary][--proto-text]");
++            capture_printf(out_buf, out_buf_size, "usage: adb track-app [--proto-binary][--proto-text]\n");
++            return 1;
+         }
+     } else if (!strcmp(argv[0], "track-devices")) {
+         const char* listopt;
+@@ -2149,14 +2367,18 @@ int adb_commandline(int argc, const char** argv) {
+             } else if (!strcmp(argv[1], "--proto-binary")) {
+                 listopt = "-proto-binary";
+             } else {
+-                error_exit("usage: adb track-devices [-l][--proto-text][--proto-binary]");
++                // error_exit("usage: adb track-devices [-l][--proto-text][--proto-binary]");
++                capture_printf(out_buf, out_buf_size, "usage: adb track-devices [-l][--proto-text][--proto-binary]\n");
++                return 1;
+             }
+         }
+         std::string query = android::base::StringPrintf("host:track-devices%s", listopt);
+         return adb_connect_command(query);
+     } else if (!strcmp(argv[0], "raw")) {
+         if (argc != 2) {
+-            error_exit("usage: adb raw SERVICE");
++            // error_exit("usage: adb raw SERVICE");
++            capture_printf(out_buf, out_buf_size, "usage: adb raw SERVICE\n");
++            return 1;
+         }
+         return adb_connect_command_bidirectional(argv[1]);
+     }
+@@ -2167,22 +2389,24 @@ int adb_commandline(int argc, const char** argv) {
+         return 0;
+     } else if (!strcmp(argv[0], "--version") || !strcmp(argv[0], "version")) {
+         fprintf(stdout, "%s", adb_version().c_str());
++        capture_printf(out_buf, out_buf_size, "%s", adb_version().c_str());
+         return 0;
+     } else if (!strcmp(argv[0], "features")) {
+         // Only list the features common to both the adb client and the device.
+-        auto&& features = adb_get_feature_set_or_die();
++        auto&& features = adb_get_feature_set_or_die(out_buf, out_buf_size);
+ 
+         for (const std::string& name : *features) {
+             if (CanUseFeature(*features, name)) {
+                 printf("%s\n", name.c_str());
++                capture_printf(out_buf, out_buf_size, "%s\n", name.c_str());
+             }
+         }
+         return 0;
+     } else if (!strcmp(argv[0], "host-features")) {
+-        return adb_query_command("host:host-features");
++        return adb_query_command(out_buf, out_buf_size, "host:host-features");
+     } else if (!strcmp(argv[0], "reconnect")) {
+         if (argc == 1) {
+-            return adb_query_command(format_host_command(argv[0]));
++            return adb_query_command(out_buf, out_buf_size, format_host_command(argv[0]));
+         } else if (argc == 2) {
+             if (!strcmp(argv[1], "device")) {
+                 std::string err;
+@@ -2190,22 +2414,30 @@ int adb_commandline(int argc, const char** argv) {
+                 return 0;
+             } else if (!strcmp(argv[1], "offline")) {
+                 std::string err;
+-                return adb_query_command("host:reconnect-offline");
++                return adb_query_command(out_buf, out_buf_size, "host:reconnect-offline");
+             } else {
+-                error_exit("usage: adb reconnect [device|offline]");
++                // error_exit("usage: adb reconnect [device|offline]");
++                capture_printf(out_buf, out_buf_size, "usage: adb reconnect [device|offline]\n");
++                return 1;
+             }
+         }
+     } else if (!strcmp(argv[0], "inc-server")) {
+         if (argc < 4) {
+ #ifdef _WIN32
+-            error_exit("usage: adb inc-server CONNECTION_HANDLE OUTPUT_HANDLE FILE1 FILE2 ...");
++            // error_exit("usage: adb inc-server CONNECTION_HANDLE OUTPUT_HANDLE FILE1 FILE2 ...");
++            capture_printf(out_buf, out_buf_size, "usage: adb inc-server CONNECTION_HANDLE OUTPUT_HANDLE FILE1 FILE2 ...");
++            return 1;
+ #else
+             error_exit("usage: adb inc-server CONNECTION_FD OUTPUT_FD FILE1 FILE2 ...");
++            capture_printf(out_buf, out_buf_size, "usage: adb inc-server CONNECTION_FD OUTPUT_FD FILE1 FILE2 ...");
++            return 1;
+ #endif
+         }
+         int connection_fd = atoi(argv[1]);
+         if (!_is_valid_os_fd(connection_fd)) {
+-            error_exit("Invalid connection_fd number given: %d", connection_fd);
++            // error_exit("Invalid connection_fd number given: %d", connection_fd);
++            capture_printf(out_buf, out_buf_size, "Invalid connection_fd number given: %d\n", connection_fd);
++            return 1;
+         }
+ 
+         connection_fd = adb_register_socket(connection_fd);
+@@ -2213,7 +2445,9 @@ int adb_commandline(int argc, const char** argv) {
+ 
+         int output_fd = atoi(argv[2]);
+         if (!_is_valid_os_fd(output_fd)) {
+-            error_exit("Invalid output_fd number given: %d", output_fd);
++            // error_exit("Invalid output_fd number given: %d", output_fd);
++            capture_printf(out_buf, out_buf_size, "Invalid output_fd number given: %d\n", output_fd);
++            return 1;
+         }
+         output_fd = adb_register_socket(output_fd);
+         close_on_exec(output_fd);
+@@ -2223,15 +2457,20 @@ int adb_commandline(int argc, const char** argv) {
+         std::string result;
+         std::string error;
+         if (!adb_query(service, &result, &error, true)) {
+-            error_exit("failed to %s: %s", argv[0], error.c_str());
++            // error_exit("failed to %s: %s", argv[0], error.c_str());
++            capture_printf(out_buf, out_buf_size, "failed to %s: %s\n", argv[0], error.c_str());
++            return 1;
+         }
+         printf("%s\n", result.c_str());
++        capture_printf(out_buf, out_buf_size, "%s\n", result.c_str());
+         return 0;
+     } else if (!strcmp(argv[0], "server-status")) {
+         AdbServerStateStreamsCallback callback;
+         return adb_connect_command("host:server-status", nullptr, &callback);
+     }
+ 
+-    error_exit("unknown command %s", argv[0]);
++    // error_exit("unknown command %s", argv[0]);
++    capture_printf(out_buf, out_buf_size, "unknown command %s\n", argv[0]);
++    return 1;
+     __builtin_unreachable();
+ }
+diff --git a/client/commandline.h b/client/commandline.h
+index 96eeb83..1b56a90 100644
+--- a/client/commandline.h
++++ b/client/commandline.h
+@@ -115,10 +115,10 @@ class SilentStandardStreamsCallbackInterface : public StandardStreamsCallbackInt
+ // Singleton.
+ extern DefaultStandardStreamsCallback DEFAULT_STANDARD_STREAMS_CALLBACK;
+ 
+-int adb_commandline(int argc, const char** argv);
++int adb_commandline(char** out_buf, size_t* out_buf_size, int argc, const char** argv);
+ 
+ // Helper retrieval function.
+-const std::optional<FeatureSet>& adb_get_feature_set_or_die();
++const std::optional<FeatureSet>& adb_get_feature_set_or_die(char** out_buf, size_t* out_buf_size);
+ 
+ bool copy_to_file(int inFd, int outFd);
+ 
+@@ -134,7 +134,7 @@ int send_shell_command(
+ // stdout/stderr are routed independently and the remote exit code will be
+ // returned.
+ // if |callback| is non-null, stdout/stderr output will be handled by it.
+-int read_and_dump(borrowed_fd fd, bool use_shell_protocol = false,
++int read_and_dump(char **output_buffer, size_t *output_size, borrowed_fd fd, bool use_shell_protocol = false,
+                   StandardStreamsCallbackInterface* callback = &DEFAULT_STANDARD_STREAMS_CALLBACK);
+ 
+ // Connects to the device "abb" service with |command| and returns the fd.
+diff --git a/client/file_sync_client.cpp b/client/file_sync_client.cpp
+index 410f412..1e9087e 100644
+--- a/client/file_sync_client.cpp
++++ b/client/file_sync_client.cpp
+@@ -15,6 +15,7 @@
+  */
+ 
+ #include "client/file_sync_client.h"
++#include "client/adb_porting.h"
+ 
+ #include <dirent.h>
+ #include <inttypes.h>
+@@ -205,7 +206,7 @@ struct TransferLedger {
+         }
+     }
+ 
+-    void ReportTransferRate(LinePrinter& lp, const std::string& name, TransferDirection direction) {
++    void ReportTransferRate(char **output_buffer, size_t *output_size, LinePrinter& lp, const std::string& name, TransferDirection direction) {
+         const char* direction_str = (direction == TransferDirection::push) ? "pushed" : "pulled";
+         std::stringstream ss;
+         if (!name.empty()) {
+@@ -218,6 +219,7 @@ struct TransferLedger {
+            << direction_str << ", " << files_skipped << " skipped.";
+         ss << TransferRate();
+ 
++        capture_printf(output_buffer, output_size, "%s", ss.str().c_str());
+         lp.Print(ss.str(), LinePrinter::LineType::INFO);
+         lp.KeepInfoLine();
+     }
+@@ -225,13 +227,14 @@ struct TransferLedger {
+ 
+ class SyncConnection {
+   public:
+-    SyncConnection() : acknowledgement_buffer_(sizeof(sync_status) + SYNC_DATA_MAX) {
++    SyncConnection(char **output_buffer, size_t *output_size) : acknowledgement_buffer_(sizeof(sync_status) + SYNC_DATA_MAX) {
+         acknowledgement_buffer_.resize(0);
+         max = SYNC_DATA_MAX; // TODO: decide at runtime.
+ 
+         std::string error;
+         auto&& features = adb_get_feature_set(&error);
+         if (!features) {
++            capture_printf(output_buffer, output_size, "failed to get feature set: %s", error.c_str());
+             Error("failed to get feature set: %s", error.c_str());
+         } else {
+             features_ = &*features;
+@@ -245,6 +248,7 @@ class SyncConnection {
+             std::string error;
+             fd.reset(adb_connect("sync:", &error));
+             if (fd < 0) {
++                capture_printf(output_buffer, output_size, "connect failed: %s", error.c_str());
+                 Error("connect failed: %s", error.c_str());
+             }
+         }
+@@ -325,13 +329,13 @@ class SyncConnection {
+         current_ledger_.ReportProgress(line_printer_, file, file_copied_bytes, file_total_bytes);
+     }
+ 
+-    void ReportTransferRate(const std::string& file, TransferDirection direction) {
+-        current_ledger_.ReportTransferRate(line_printer_, file, direction);
++    void ReportTransferRate(char **output_buffer, size_t *output_size, const std::string& file, TransferDirection direction) {
++        current_ledger_.ReportTransferRate(output_buffer, output_size, line_printer_, file, direction);
+     }
+ 
+     void ReportOverallTransferRate(TransferDirection direction) {
+         if (current_ledger_ != global_ledger_) {
+-            global_ledger_.ReportTransferRate(line_printer_, "", direction);
++            global_ledger_.ReportTransferRate(nullptr, nullptr, line_printer_, "", direction);
+         }
+     }
+ 
+@@ -1272,11 +1276,12 @@ static bool sync_recv(SyncConnection& sc, const char* rpath, const char* lpath,
+     }
+ }
+ 
+-bool do_sync_ls(const char* path) {
+-    SyncConnection sc;
++bool do_sync_ls(char **output_buffer, size_t *output_size, const char* path) {
++    SyncConnection sc(output_buffer, output_size);
+     if (!sc.IsValid()) return false;
+ 
+-    return sync_ls(sc, path, [](unsigned mode, uint64_t size, uint64_t time, const char* name) {
++    return sync_ls(sc, path, [output_buffer, output_size](unsigned mode, uint64_t size, uint64_t time, const char* name) {
++        capture_printf(output_buffer, output_size, "%08x %08" PRIx64 " %08" PRIx64 " %s\n", mode, size, time, name);
+         printf("%08x %08" PRIx64 " %08" PRIx64 " %s\n", mode, size, time, name);
+     });
+ }
+@@ -1345,7 +1350,7 @@ static bool is_root_dir(std::string_view path) {
+     return true;
+ }
+ 
+-static bool copy_local_dir_remote(SyncConnection& sc, std::string lpath, std::string rpath,
++static bool copy_local_dir_remote(char **output_buffer, size_t *output_size, SyncConnection& sc, std::string lpath, std::string rpath,
+                                   bool check_timestamps, bool list_only,
+                                   CompressionType compression, bool dry_run) {
+     sc.NewTransfer();
+@@ -1385,6 +1390,7 @@ static bool copy_local_dir_remote(SyncConnection& sc, std::string lpath, std::st
+             std::string escaped_path = escape_arg(dir);
+             if (escaped_path.size() > 16384) {
+                 // Somewhat arbitrarily limit that probably won't ever happen.
++                capture_printf(output_buffer, output_size, "path too long: %s\n", escaped_path.c_str());
+                 sc.Error("path too long: %s", escaped_path.c_str());
+                 return false;
+             }
+@@ -1408,6 +1414,7 @@ static bool copy_local_dir_remote(SyncConnection& sc, std::string lpath, std::st
+     if (check_timestamps) {
+         for (const copyinfo& ci : file_list) {
+             if (!sc.SendLstat(ci.rpath)) {
++                capture_printf(output_buffer, output_size, "failed to send lstat\n");
+                 sc.Error("failed to send lstat");
+                 return false;
+             }
+@@ -1427,6 +1434,7 @@ static bool copy_local_dir_remote(SyncConnection& sc, std::string lpath, std::st
+     for (const copyinfo& ci : file_list) {
+         if (!ci.skip) {
+             if (list_only) {
++                capture_printf(output_buffer, output_size, "would push: %s -> %s", ci.lpath.c_str(), ci.rpath.c_str());
+                 sc.Println("would push: %s -> %s", ci.lpath.c_str(), ci.rpath.c_str());
+             } else {
+                 if (!sync_send(sc, ci.lpath, ci.rpath, ci.time, ci.mode, false, compression,
+@@ -1441,13 +1449,13 @@ static bool copy_local_dir_remote(SyncConnection& sc, std::string lpath, std::st
+ 
+     sc.RecordFilesSkipped(skipped);
+     bool success = sc.ReadAcknowledgements(true);
+-    sc.ReportTransferRate(lpath, TransferDirection::push);
++    sc.ReportTransferRate(nullptr, nullptr, lpath, TransferDirection::push);
+     return success;
+ }
+ 
+-bool do_sync_push(const std::vector<const char*>& srcs, const char* dst, bool sync,
++bool do_sync_push(char **output_buffer, size_t *output_size, const std::vector<const char*>& srcs, const char* dst, bool sync,
+                   CompressionType compression, bool dry_run, bool quiet) {
+-    SyncConnection sc;
++    SyncConnection sc(output_buffer, output_size);
+     if (!sc.IsValid()) return false;
+     sc.SetQuiet(quiet);
+ 
+@@ -1464,6 +1472,7 @@ bool do_sync_push(const std::vector<const char*>& srcs, const char* dst, bool sy
+             dst_exists = false;
+             dst_isdir = false;
+         } else {
++            capture_printf(output_buffer, output_size, "stat failed when trying to push to %s: %s", dst, strerror(errno));
+             sc.Error("stat failed when trying to push to %s: %s", dst, strerror(errno));
+             return false;
+         }
+@@ -1471,6 +1480,7 @@ bool do_sync_push(const std::vector<const char*>& srcs, const char* dst, bool sy
+ 
+     if (!dst_isdir) {
+         if (srcs.size() > 1) {
++            capture_printf(output_buffer, output_size, "target '%s' is not a directory", dst);
+             sc.Error("target '%s' is not a directory", dst);
+             return false;
+         } else {
+@@ -1479,6 +1489,7 @@ bool do_sync_push(const std::vector<const char*>& srcs, const char* dst, bool sy
+             // A path that ends with a slash doesn't have to be a directory if
+             // it doesn't exist yet.
+             if (dst[dst_len - 1] == '/' && dst_exists) {
++                capture_printf(output_buffer, output_size, "failed to access '%s': Not a directory", dst);
+                 sc.Error("failed to access '%s': Not a directory", dst);
+                 return false;
+             }
+@@ -1489,6 +1500,7 @@ bool do_sync_push(const std::vector<const char*>& srcs, const char* dst, bool sy
+         const char* dst_path = dst;
+         struct stat st;
+         if (stat(src_path, &st) == -1) {
++            capture_printf(output_buffer, output_size, "cannot stat '%s': %s", src_path, strerror(errno));
+             sc.Error("cannot stat '%s': %s", src_path, strerror(errno));
+             success = false;
+             continue;
+@@ -1501,6 +1513,7 @@ bool do_sync_push(const std::vector<const char*>& srcs, const char* dst, bool sy
+             // should be copied as a child of the destination.
+             if (dst_exists) {
+                 if (!dst_isdir) {
++                    capture_printf(output_buffer, output_size, "target '%s' is not a directory", dst);
+                     sc.Error("target '%s' is not a directory", dst);
+                     return false;
+                 }
+@@ -1513,7 +1526,7 @@ bool do_sync_push(const std::vector<const char*>& srcs, const char* dst, bool sy
+             }
+ 
+             success &=
+-                    copy_local_dir_remote(sc, src_path, dst_dir, sync, false, compression, dry_run);
++                    copy_local_dir_remote(output_buffer, output_size, sc, src_path, dst_dir, sync, false, compression, dry_run);
+             continue;
+         } else if (!should_push_file(st.st_mode)) {
+             sc.Warning("skipping special file '%s' (mode = 0o%o)", src_path, st.st_mode);
+@@ -1536,7 +1549,7 @@ bool do_sync_push(const std::vector<const char*>& srcs, const char* dst, bool sy
+         sc.SetExpectedTotalBytes(st.st_size);
+         success &= sync_send(sc, src_path, dst_path, st.st_mtime, st.st_mode, sync, compression,
+                              dry_run);
+-        sc.ReportTransferRate(src_path, TransferDirection::push);
++        sc.ReportTransferRate(output_buffer, output_size, src_path, TransferDirection::push);
+     }
+ 
+     success &= sc.ReadAcknowledgements(true);
+@@ -1620,7 +1633,7 @@ static int set_time_and_mode(const std::string& lpath, time_t time,
+     return r1 ? r1 : r2;
+ }
+ 
+-static bool copy_remote_dir_local(SyncConnection& sc, std::string rpath, std::string lpath,
++static bool copy_remote_dir_local(char **output_buffer, size_t *output_size, SyncConnection& sc, std::string rpath, std::string lpath,
+                                   bool copy_attrs, CompressionType compression) {
+     sc.NewTransfer();
+ 
+@@ -1629,6 +1642,7 @@ static bool copy_remote_dir_local(SyncConnection& sc, std::string rpath, std::st
+     ensure_trailing_separators(lpath, rpath);
+ 
+     // Recursively build the list of files to copy.
++    capture_printf(output_buffer, output_size, "pull: building file list...");
+     sc.Printf("pull: building file list...");
+     std::vector<copyinfo> file_list;
+     if (!remote_build_list(sc, &file_list, rpath, lpath)) {
+@@ -1644,6 +1658,8 @@ static bool copy_remote_dir_local(SyncConnection& sc, std::string rpath, std::st
+                 // Entry is for an empty directory, create it and continue.
+                 // TODO(b/25457350): We don't preserve permissions on directories.
+                 if (!mkdirs(ci.lpath))  {
++                    capture_printf(output_buffer, output_size, "failed to create directory '%s': %s",
++                                 ci.lpath.c_str(), strerror(errno));
+                     sc.Error("failed to create directory '%s': %s",
+                              ci.lpath.c_str(), strerror(errno));
+                     return false;
+@@ -1664,13 +1680,13 @@ static bool copy_remote_dir_local(SyncConnection& sc, std::string rpath, std::st
+     }
+ 
+     sc.RecordFilesSkipped(skipped);
+-    sc.ReportTransferRate(rpath, TransferDirection::pull);
++    sc.ReportTransferRate(output_buffer, output_size, rpath, TransferDirection::pull);
+     return true;
+ }
+ 
+-bool do_sync_pull(const std::vector<const char*>& srcs, const char* dst, bool copy_attrs,
++bool do_sync_pull(char **output_buffer, size_t *output_size, const std::vector<const char*>& srcs, const char* dst, bool copy_attrs,
+                   CompressionType compression, const char* name, bool quiet) {
+-    SyncConnection sc;
++    SyncConnection sc(output_buffer, output_size);
+     if (!sc.IsValid()) return false;
+     sc.SetQuiet(quiet);
+ 
+@@ -1687,10 +1703,12 @@ bool do_sync_pull(const std::vector<const char*>& srcs, const char* dst, bool co
+             // However, its parent must exist.
+             struct stat parent_st;
+             if (stat(android::base::Dirname(dst).c_str(), &parent_st) == -1) {
++                capture_printf(output_buffer, output_size, "cannot create file/directory '%s': %s", dst, strerror(errno));
+                 sc.Error("cannot create file/directory '%s': %s", dst, strerror(errno));
+                 return false;
+             }
+         } else {
++            capture_printf(output_buffer, output_size, "failed to access '%s': %s", dst, strerror(errno));
+             sc.Error("failed to access '%s': %s", dst, strerror(errno));
+             return false;
+         }
+@@ -1699,6 +1717,7 @@ bool do_sync_pull(const std::vector<const char*>& srcs, const char* dst, bool co
+     bool dst_isdir = dst_exists && S_ISDIR(st.st_mode);
+     if (!dst_isdir) {
+         if (srcs.size() > 1) {
++            capture_printf(output_buffer, output_size, "target '%s' is not a directory", dst);
+             sc.Error("target '%s' is not a directory", dst);
+             return false;
+         } else {
+@@ -1707,6 +1726,7 @@ bool do_sync_pull(const std::vector<const char*>& srcs, const char* dst, bool co
+             // A path that ends with a slash doesn't have to be a directory if
+             // it doesn't exist yet.
+             if (adb_is_separator(dst[dst_len - 1]) && dst_exists) {
++                capture_printf(output_buffer, output_size, "failed to access '%s': Not a directory", dst);
+                 sc.Error("failed to access '%s': Not a directory", dst);
+                 return false;
+             }
+@@ -1718,8 +1738,10 @@ bool do_sync_pull(const std::vector<const char*>& srcs, const char* dst, bool co
+         struct stat src_st;
+         if (!sync_stat_fallback(sc, src_path, &src_st)) {
+             if (errno == ENOPROTOOPT) {
++                capture_printf(output_buffer, output_size, "remote object '%s' does not exist\n", src_path);
+                 sc.Error("remote object '%s' does not exist", src_path);
+             } else {
++                capture_printf(output_buffer, output_size, "failed to stat remote object '%s': %s\n", src_path, strerror(errno));
+                 sc.Error("failed to stat remote object '%s': %s", src_path, strerror(errno));
+             }
+ 
+@@ -1735,6 +1757,7 @@ bool do_sync_pull(const std::vector<const char*>& srcs, const char* dst, bool co
+             // should be copied as a child of the destination.
+             if (dst_exists) {
+                 if (!dst_isdir) {
++                    capture_printf(output_buffer, output_size, "target '%s' is not a directory\n", dst);
+                     sc.Error("target '%s' is not a directory", dst);
+                     return false;
+                 }
+@@ -1744,7 +1767,7 @@ bool do_sync_pull(const std::vector<const char*>& srcs, const char* dst, bool co
+                 dst_dir.append(android::base::Basename(src_path));
+             }
+ 
+-            success &= copy_remote_dir_local(sc, src_path, dst_dir, copy_attrs, compression);
++            success &= copy_remote_dir_local(output_buffer, output_size, sc, src_path, dst_dir, copy_attrs, compression);
+             continue;
+         } else if (!should_pull_file(src_st.st_mode)) {
+             sc.Warning("skipping special file '%s' (mode = 0o%o)", src_path, src_st.st_mode);
+@@ -1772,20 +1795,20 @@ bool do_sync_pull(const std::vector<const char*>& srcs, const char* dst, bool co
+             success = false;
+             continue;
+         }
+-        sc.ReportTransferRate(src_path, TransferDirection::pull);
++        sc.ReportTransferRate(output_buffer, output_size, src_path, TransferDirection::pull);
+     }
+ 
+     sc.ReportOverallTransferRate(TransferDirection::pull);
+     return success;
+ }
+ 
+-bool do_sync_sync(const std::string& lpath, const std::string& rpath, bool list_only,
++bool do_sync_sync(char **output_buffer, size_t *output_size, const std::string& lpath, const std::string& rpath, bool list_only,
+                   CompressionType compression, bool dry_run, bool quiet) {
+-    SyncConnection sc;
++    SyncConnection sc(output_buffer, output_size);
+     if (!sc.IsValid()) return false;
+     sc.SetQuiet(quiet);
+ 
+-    bool success = copy_local_dir_remote(sc, lpath, rpath, true, list_only, compression, dry_run);
++    bool success = copy_local_dir_remote(output_buffer, output_size, sc, lpath, rpath, true, list_only, compression, dry_run);
+     if (!list_only) {
+         sc.ReportOverallTransferRate(TransferDirection::push);
+     }
+diff --git a/client/file_sync_client.h b/client/file_sync_client.h
+index 200a9ae..c6b5c67 100644
+--- a/client/file_sync_client.h
++++ b/client/file_sync_client.h
+@@ -21,11 +21,11 @@
+ 
+ #include "file_sync_protocol.h"
+ 
+-bool do_sync_ls(const char* path);
+-bool do_sync_push(const std::vector<const char*>& srcs, const char* dst, bool sync,
++bool do_sync_ls(char **output_buffer, size_t *output_size, const char* path);
++bool do_sync_push(char **output_buffer, size_t *output_size, const std::vector<const char*>& srcs, const char* dst, bool sync,
+                   CompressionType compression, bool dry_run, bool quiet);
+-bool do_sync_pull(const std::vector<const char*>& srcs, const char* dst, bool copy_attrs,
++bool do_sync_pull(char **output_buffer, size_t *output_size, const std::vector<const char*>& srcs, const char* dst, bool copy_attrs,
+                   CompressionType compression, const char* name = nullptr, bool quiet = false);
+ 
+-bool do_sync_sync(const std::string& lpath, const std::string& rpath, bool list_only,
++bool do_sync_sync(char **output_buffer, size_t *output_size, const std::string& lpath, const std::string& rpath, bool list_only,
+                   CompressionType compression, bool dry_run, bool quiet);
+diff --git a/client/main.cpp b/client/main.cpp
+index fe6d20b..5fa9846 100644
+--- a/client/main.cpp
++++ b/client/main.cpp
+@@ -1,49 +1,44 @@
+-/*
+- * Copyright (C) 2015 The Android Open Source Project
+- *
+- * Licensed under the Apache License, Version 2.0 (the "License");
+- * you may not use this file except in compliance with the License.
+- * You may obtain a copy of the License at
+- *
+- *      http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
++// → adding adb_porting.cpp to build workflow
+ 
+-#define TRACE_TAG ADB
++#include "adb_porting.h"
++#include "adb_porting.cpp"
+ 
+ #include "sysdeps.h"
+ 
+-#include <signal.h>
+-#include <stdio.h>
+-#include <stdlib.h>
+-#include <unistd.h>
+-
+-#include <thread>
+-
+-#include <android-base/errors.h>
+-#include <android-base/file.h>
+-#include <android-base/logging.h>
+-#include <android-base/stringprintf.h>
+-
+-#include "adb.h"
+-#include "adb_auth.h"
+-#include "adb_client.h"
+-#include "adb_listeners.h"
+-#include "adb_mdns.h"
+-#include "adb_utils.h"
+-#include "adb_wifi.h"
+-#include "client/usb.h"
+-#include "commandline.h"
+-#include "sysdeps/chrono.h"
+-#include "transport.h"
+-
+-const char** __adb_argv;
+-const char** __adb_envp;
++// Fix shutdown defined in sysdeps.h
++#undef shutdown
++#undef close
++
++// include additional source codes
++#include "sysdeps/env.cpp"
++
++// include all file from CMakeList.txt
++
++/** hijack launch_server **/
++#define launch_server(...)    launch_server_unused(__VA_ARGS__)
++/** hijack this func to handle adb connect status **/
++#define update_transport_status(...)		update_transport_status_real(__VA_ARGS__)
++#include "adb.cpp"
++#undef launch_server
++#undef update_transport_status
++
++#include "adb_io.cpp"
++#include "adb_utils.cpp"
++#include "adb_listeners.cpp"
++#include "shell_service_protocol.cpp"
++#include "adb_trace.cpp"
++#include "adb_unique_fd.cpp"
++#include "types.cpp"
++#include "fdevent/fdevent.cpp"
++#include "fdevent/fdevent_poll.cpp"
++#include "fdevent/fdevent_epoll.cpp"
++
++#include "sockets.cpp"
++#include "socket_spec.cpp"
++#include "transport.cpp"
++#include "transport_fd.cpp"
++#include "transport_usb.cpp"
++#include "transport_local.cpp"
+ 
+ static void setup_daemon_logging() {
+     const std::string log_file_path(GetLogFilePath());
+@@ -70,7 +65,8 @@ void adb_server_cleanup() {
+     //   3. usb_cleanup, to tear down the USB stack.
+     close_smartsockets();
+     kick_all_transports();
+-    usb_cleanup();
++    // Porting fix: disable usb
++    // usb_cleanup();
+ }
+ 
+ static void intentionally_leak() {
+@@ -130,15 +126,16 @@ int adb_server_main(int is_daemon, const std::string& socket_spec, const char* o
+ 
+     init_reconnect_handler();
+ 
+-    if (!getenv("ADB_USB") || strcmp(getenv("ADB_USB"), "0") != 0) {
+-        if (is_libusb_enabled()) {
+-            libusb::usb_init();
+-        } else {
+-            usb_init();
+-        }
+-    } else {
++    // Porting fix: disable usb
++    // if (!getenv("ADB_USB") || strcmp(getenv("ADB_USB"), "0") != 0) {
++    //     if (is_libusb_enabled()) {
++    //         libusb::usb_init();
++    //     } else {
++    //         usb_init();
++    //     }
++    // } else {
+         adb_notify_device_scan_complete();
+-    }
++    // }
+ 
+     if (!getenv("ADB_EMU") || strcmp(getenv("ADB_EMU"), "0") != 0) {
+         local_init(android::base::StringPrintf("tcp:%d", DEFAULT_ADB_LOCAL_TRANSPORT_PORT));
+@@ -234,9 +231,120 @@ int adb_server_main(int is_daemon, const std::string& socket_spec, const char* o
+     return 0;
+ }
+ 
+-int main(int argc, char* argv[], char* envp[]) {
+-    __adb_argv = const_cast<const char**>(argv);
+-    __adb_envp = const_cast<const char**>(envp);
+-    adb_trace_init(argv);
+-    return adb_commandline(argc - 1, const_cast<const char**>(argv + 1));
++
++/**
++ * Rewrite launch_server to launch in thread but not by new process
++ */
++void fdevent_reset_porting(void) {
++    fdevent_reset();
++}
++
++void clear_listener_list(void) {
++    listener_list.clear();
++}
++
++void clear_transport_list(void) {
++    std::lock_guard<std::recursive_mutex> lock(transport_lock);
++    for (auto t : transport_list) {
++        t->Kick();
++    }
++    transport_list.clear();
++    pending_list.clear();
++}
++
++void launch_server_thread(int pipe_write, const char *thread_socket_spec) {
++    // Launch server with pipe
++    fcntl(pipe_write, F_SETFD, 0);
++    printf("[adb_porting] launch_server_main: %d\n", pipe_write);
++
++    // Start main server
++    adb_server_main(false, thread_socket_spec, nullptr, pipe_write);
++}
++
++int launch_server(const std::string& socket_spec, const char* one_device) {
++    // Before launch server, we need to clear all the transport list
++    static bool not_first = false;
++    if (not_first == true) {
++        printf("[adb_porting] 🔄 terminating loop\n");
++        fdevent_get_ambient()->TerminateLoop();
++
++        // Wait for the fdevent loop to actually exit before destroying the context
++        // This fixes the race condition where the loop thread was still accessing
++        // installed_fdevents_ while we were destroying it
++        printf("[adb_porting] ⏳ waiting for loop to exit\n");
++        fdevent_wait_for_loop_exit();
++        printf("[adb_porting] ✅ loop exited\n");
++
++        printf("[adb_porting] 🧹 cleanup sockets and threads\n");
++        adb_server_cleanup();
++        clear_transport_list();
++        fdevent_reset_porting();
++    }
++    not_first = true;
++
++    static char *thread_socket_spec;
++    static int pipe_server[2];
++
++	printf("[adb_porting] socket %s\n", socket_spec.c_str());
++    thread_socket_spec = strdup(socket_spec.c_str());
++
++    // Reset last used pipe
++    pipe(pipe_server);
++
++    // set up a pipe so the child can tell us when it is ready.
++    if (pipe_server[0] < 0 || pipe_server[1] < 0) {
++        fprintf(stderr, "pipe failed in launch_server, errno: %d\n", errno);
++        return -1;
++    }
++
++    std::string path = android::base::GetExecutablePath();
++
++    // launch server in new thread
++    std::thread adb_thread([]() {
++        launch_server_thread(pipe_server[1], thread_socket_spec);
++    });
++    adb_thread.detach();
++
++    // parent side
++    printf("[adb_porting] launch_server pipe_write: %d\n", pipe_server[0]);
++    printf("[adb_porting] launch_server pipe_read: %d\n", pipe_server[1]);
++
++    // wait for the "OK\n" message from the child
++    char temp[3] = {};
++    int ret = adb_read(pipe_server[0], temp, 3);
++    int saved_errno = errno;
++    if (ret < 0) {
++        fprintf(stderr, "[adb_porting] could not read ok from ADB Server, errno = %d\n", saved_errno);
++        return -1;
++    }
++    if (ret != 3 || temp[0] != 'O' || temp[1] != 'K' || temp[2] != '\n') {
++        ReportServerStartupFailure(0);
++        return -1;
++    }
++
++    return 0;
++}
++
++extern "C" {
++
++__attribute__ ((weak))
++void adb_connect_status_updated(const char *serial, const char *status) {
++    printf("%s", __FUNCTION__);
++}
++
++int adb_auth_key_generate(const char* filename) {
++    return adb_auth_keygen(filename);
++}
++
++}
++
++void update_transport_status() {
++    update_transport_status_real();
++
++    // Check all the tcp transports connect status
++    iterate_transports([](const atransport *t) {
++        printf("adb connect status changed: %s -> %s\n", t->serial.c_str(), to_string(t->GetConnectionState()).c_str());
++        adb_connect_status_updated(t->serial.c_str(), to_string(t->GetConnectionState()).c_str());
++        return true;
++    });
+ }
+diff --git a/client/transport_usb.cpp b/client/transport_usb.cpp
+index 58d5025..9456f20 100644
+--- a/client/transport_usb.cpp
++++ b/client/transport_usb.cpp
+@@ -41,108 +41,28 @@
+ // to avoid overflow. See http://libusb.sourceforge.net/api-1.0/packetoverflow.html.
+ static int UsbReadMessage(usb_handle* h, amessage* msg) {
+     D("UsbReadMessage");
+-
+-#if CHECK_PACKET_OVERFLOW
+-    size_t usb_packet_size = usb_get_max_packet_size(h);
+-    CHECK_GE(usb_packet_size, sizeof(*msg));
+-    CHECK_LT(usb_packet_size, 4096ULL);
+-
+-    char buffer[4096];
+-    int n = usb_read(h, buffer, usb_packet_size);
+-    if (n != sizeof(*msg)) {
+-        D("usb_read returned unexpected length %d (expected %zu)", n, sizeof(*msg));
+-        return -1;
+-    }
+-    memcpy(msg, buffer, sizeof(*msg));
+-    return n;
+-#else
+-    return usb_read(h, msg, sizeof(*msg));
+-#endif
++    return 0;
+ }
+ 
+ // Call usb_read using a buffer having a multiple of usb_get_max_packet_size() bytes
+ // to avoid overflow. See http://libusb.sourceforge.net/api-1.0/packetoverflow.html.
+ static int UsbReadPayload(usb_handle* h, apacket* p) {
+-    D("UsbReadPayload(%d)", p->msg.data_length);
+-
+-    if (p->msg.data_length > MAX_PAYLOAD) {
+-        return -1;
+-    }
+-
+-#if CHECK_PACKET_OVERFLOW
+-    size_t usb_packet_size = usb_get_max_packet_size(h);
+-
+-    // Round the data length up to the nearest packet size boundary.
+-    // The device won't send a zero packet for packet size aligned payloads,
+-    // so don't read any more packets than needed.
+-    size_t len = p->msg.data_length;
+-    size_t rem_size = len % usb_packet_size;
+-    if (rem_size) {
+-        len += usb_packet_size - rem_size;
+-    }
+-
+-    p->payload.resize(len);
+-    int rc = usb_read(h, &p->payload[0], p->payload.size());
+-    if (rc != static_cast<int>(p->msg.data_length)) {
+-        return -1;
+-    }
+-
+-    p->payload.resize(rc);
+-    return rc;
+-#else
+-    p->payload.resize(p->msg.data_length);
+-    return usb_read(h, &p->payload[0], p->payload.size());
+-#endif
++    return 0;
+ }
+ 
+ static int remote_read(apacket* p, usb_handle* usb) {
+-    int n = UsbReadMessage(usb, &p->msg);
+-    if (n < 0) {
+-        D("remote usb: read terminated (message)");
+-        return -1;
+-    }
+-    if (static_cast<size_t>(n) != sizeof(p->msg)) {
+-        D("remote usb: read received unexpected header length %d", n);
+-        return -1;
+-    }
+-    if (p->msg.data_length) {
+-        n = UsbReadPayload(usb, p);
+-        if (n < 0) {
+-            D("remote usb: terminated (data)");
+-            return -1;
+-        }
+-        if (static_cast<uint32_t>(n) != p->msg.data_length) {
+-            D("remote usb: read payload failed (need %u bytes, give %d bytes), skip it",
+-              p->msg.data_length, n);
+-            return -1;
+-        }
+-    }
+     return 0;
+ }
+ 
+ UsbConnection::~UsbConnection() {
+-    usb_close(handle_);
+ }
+ 
+ bool UsbConnection::Read(apacket* packet) {
+-    int rc = remote_read(packet, handle_);
+-    return rc == 0;
++    return false;
+ }
+ 
+ bool UsbConnection::Write(apacket* packet) {
+-    int size = packet->msg.data_length;
+-
+-    if (usb_write(handle_, &packet->msg, sizeof(packet->msg)) != sizeof(packet->msg)) {
+-        PLOG(ERROR) << "remote usb: 1 - write terminated";
+-        return false;
+-    }
+-
+-    if (packet->msg.data_length != 0 && usb_write(handle_, packet->payload.data(), size) != size) {
+-        PLOG(ERROR) << "remote usb: 2 - write terminated";
+-        return false;
+-    }
+-
+-    return true;
++    return false;
+ }
+ 
+ bool UsbConnection::DoTlsHandshake(RSA* key, std::string* auth_key) {
+@@ -152,39 +72,19 @@ bool UsbConnection::DoTlsHandshake(RSA* key, std::string* auth_key) {
+ }
+ 
+ void UsbConnection::Reset() {
+-    usb_reset(handle_);
+-    usb_kick(handle_);
+ }
+ 
+ void UsbConnection::Close() {
+-    usb_kick(handle_);
+ }
+ 
+ void init_usb_transport(atransport* t, usb_handle* h) {
+     D("transport: usb");
+-    auto connection = std::make_unique<UsbConnection>(h);
+-    t->SetConnection(std::make_unique<BlockingConnectionAdapter>(std::move(connection)));
+-    t->type = kTransportUsb;
+-    t->SetUsbHandle(h);
+ }
+ 
+ bool is_adb_interface(int usb_class, int usb_subclass, int usb_protocol) {
+-    // ADB over gadget mode and DbC use the same ADB protocol.
+-    if (usb_protocol == ADB_PROTOCOL && ((usb_class == ADB_CLASS && usb_subclass == ADB_SUBCLASS) ||
+-            (usb_class == ADB_DBC_CLASS && usb_subclass == ADB_DBC_SUBCLASS)))
+-        return true;
+-    else
+-        return false;
++    return false;
+ }
+ 
+ bool is_libusb_enabled() {
+-    bool enable = true;
+-#if defined(_WIN32)
+-    enable = false;
+-#endif
+-    char* env = getenv("ADB_LIBUSB");
+-    if (env) {
+-        enable = (strcmp(env, "1") == 0);
+-    }
+-    return enable;
++    return false;
+ }
+diff --git a/client/usb_libusb.cpp b/client/usb_libusb.cpp
+index f533b55..e69de29 100644
+--- a/client/usb_libusb.cpp
++++ b/client/usb_libusb.cpp
+@@ -1,1088 +0,0 @@
+-/*
+- * Copyright (C) 2016 The Android Open Source Project
+- *
+- * Licensed under the Apache License, Version 2.0 (the "License");
+- * you may not use this file except in compliance with the License.
+- * You may obtain a copy of the License at
+- *
+- *      http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-
+-#include "sysdeps.h"
+-
+-#include "client/usb.h"
+-
+-#include <stdint.h>
+-#include <stdlib.h>
+-
+-#if defined(__linux__)
+-#include <sys/inotify.h>
+-#include <unistd.h>
+-#endif
+-
+-#include <atomic>
+-#include <chrono>
+-#include <condition_variable>
+-#include <memory>
+-#include <mutex>
+-#include <string>
+-#include <thread>
+-#include <unordered_map>
+-#include <vector>
+-
+-#ifdef ANDROID_TOOLS_USE_BUNDLED_LIBUSB
+-#include <libusb/libusb.h>
+-#else
+-#include <libusb-1.0/libusb.h>
+-#endif
+-
+-#include <android-base/file.h>
+-#include <android-base/logging.h>
+-#include <android-base/stringprintf.h>
+-#include <android-base/strings.h>
+-#include <android-base/thread_annotations.h>
+-
+-#include "adb.h"
+-#include "adb_utils.h"
+-#include "fdevent/fdevent.h"
+-#include "transfer_id.h"
+-#include "transport.h"
+-
+-using namespace std::chrono_literals;
+-
+-using android::base::ScopedLockAssertion;
+-using android::base::StringPrintf;
+-
+-#define LOG_ERR(out, fmt, ...)                                               \
+-    do {                                                                     \
+-        std::string __err = android::base::StringPrintf(fmt, ##__VA_ARGS__); \
+-        LOG(ERROR) << __err;                                                 \
+-        *out = std::move(__err);                                             \
+-    } while (0)
+-
+-// RAII wrappers for libusb.
+-struct ConfigDescriptorDeleter {
+-    void operator()(libusb_config_descriptor* desc) { libusb_free_config_descriptor(desc); }
+-};
+-
+-using unique_config_descriptor = std::unique_ptr<libusb_config_descriptor, ConfigDescriptorDeleter>;
+-
+-struct DeviceDeleter {
+-    void operator()(libusb_device* d) { libusb_unref_device(d); }
+-};
+-
+-using unique_device = std::unique_ptr<libusb_device, DeviceDeleter>;
+-
+-struct DeviceHandleDeleter {
+-    void operator()(libusb_device_handle* h) { libusb_close(h); }
+-};
+-
+-using unique_device_handle = std::unique_ptr<libusb_device_handle, DeviceHandleDeleter>;
+-
+-static void process_device(libusb_device* device_raw);
+-
+-static std::string get_device_address(libusb_device* device) {
+-    uint8_t ports[7];
+-    int port_count = libusb_get_port_numbers(device, ports, 7);
+-    if (port_count < 0) return "";
+-
+-    std::string address = StringPrintf("%d-%d", libusb_get_bus_number(device), ports[0]);
+-    for (int port = 1; port < port_count; ++port) {
+-        address += StringPrintf(".%d", ports[port]);
+-    }
+-
+-    return address;
+-}
+-
+-#if defined(__linux__)
+-static std::string get_device_serial_path(libusb_device* device) {
+-    std::string address = get_device_address(device);
+-    std::string path = StringPrintf("/sys/bus/usb/devices/%s/serial", address.c_str());
+-    return path;
+-}
+-#endif
+-
+-static bool endpoint_is_output(uint8_t endpoint) {
+-    return (endpoint & LIBUSB_ENDPOINT_DIR_MASK) == LIBUSB_ENDPOINT_OUT;
+-}
+-
+-static bool should_perform_zero_transfer(size_t write_length, uint16_t zero_mask) {
+-    return write_length != 0 && zero_mask != 0 && (write_length & zero_mask) == 0;
+-}
+-
+-struct LibusbConnection : public Connection {
+-    struct ReadBlock {
+-        LibusbConnection* self = nullptr;
+-        libusb_transfer* transfer = nullptr;
+-        Block block;
+-        bool active = false;
+-    };
+-
+-    struct WriteBlock {
+-        LibusbConnection* self;
+-        libusb_transfer* transfer;
+-        Block block;
+-        TransferId id;
+-    };
+-
+-    explicit LibusbConnection(unique_device device)
+-        : device_(std::move(device)), device_address_(get_device_address(device_.get())) {}
+-
+-    ~LibusbConnection() { Stop(); }
+-
+-    void HandlePacket(amessage& msg, std::optional<Block> payload) {
+-        auto packet = std::make_unique<apacket>();
+-        packet->msg = msg;
+-        if (payload) {
+-            packet->payload = std::move(*payload);
+-        }
+-        transport_->HandleRead(std::move(packet));
+-    }
+-
+-    void Cleanup(ReadBlock* read_block) REQUIRES(read_mutex_) {
+-        libusb_free_transfer(read_block->transfer);
+-        read_block->active = false;
+-        read_block->transfer = nullptr;
+-        if (terminated_) {
+-            destruction_cv_.notify_one();
+-        }
+-    }
+-
+-    bool MaybeCleanup(ReadBlock* read_block) REQUIRES(read_mutex_) {
+-        CHECK(read_block);
+-        CHECK(read_block->transfer);
+-
+-        if (terminated_) {
+-            Cleanup(read_block);
+-            return true;
+-        }
+-
+-        return false;
+-    }
+-
+-    static void LIBUSB_CALL header_read_cb(libusb_transfer* transfer) {
+-        auto read_block = static_cast<ReadBlock*>(transfer->user_data);
+-        auto self = read_block->self;
+-
+-        std::lock_guard<std::mutex> lock(self->read_mutex_);
+-        CHECK_EQ(read_block, &self->header_read_);
+-        if (self->MaybeCleanup(read_block)) {
+-            return;
+-        }
+-
+-        if (transfer->status != LIBUSB_TRANSFER_COMPLETED) {
+-            std::string msg = StringPrintf("usb read failed: status = %d", transfer->status);
+-            LOG(ERROR) << msg;
+-            if (!self->detached_) {
+-                self->OnError(msg);
+-            }
+-            self->Cleanup(read_block);
+-            return;
+-        }
+-
+-        if (transfer->actual_length != sizeof(amessage)) {
+-            std::string msg = StringPrintf("usb read: invalid length for header: %d",
+-                                           transfer->actual_length);
+-            LOG(ERROR) << msg;
+-            self->OnError(msg);
+-            self->Cleanup(read_block);
+-            return;
+-        }
+-
+-        CHECK(!self->incoming_header_);
+-        amessage& amsg = self->incoming_header_.emplace();
+-        memcpy(&amsg, transfer->buffer, sizeof(amsg));
+-
+-        if (amsg.data_length > MAX_PAYLOAD) {
+-            std::string msg =
+-                    StringPrintf("usb read: payload length too long: %d", amsg.data_length);
+-            LOG(ERROR) << msg;
+-            self->OnError(msg);
+-            self->Cleanup(&self->header_read_);
+-            return;
+-        } else if (amsg.data_length == 0) {
+-            self->HandlePacket(amsg, std::nullopt);
+-            self->incoming_header_.reset();
+-            self->SubmitRead(read_block, sizeof(amessage));
+-        } else {
+-            read_block->active = false;
+-            self->SubmitRead(&self->payload_read_, amsg.data_length);
+-        }
+-    }
+-
+-    static void LIBUSB_CALL payload_read_cb(libusb_transfer* transfer) {
+-        auto read_block = static_cast<ReadBlock*>(transfer->user_data);
+-        auto self = read_block->self;
+-        std::lock_guard<std::mutex> lock(self->read_mutex_);
+-
+-        if (self->MaybeCleanup(&self->payload_read_)) {
+-            return;
+-        }
+-
+-        if (transfer->status != LIBUSB_TRANSFER_COMPLETED) {
+-            std::string msg = StringPrintf("usb read failed: status = %d", transfer->status);
+-            LOG(ERROR) << msg;
+-            if (!self->detached_) {
+-                self->OnError(msg);
+-            }
+-            self->Cleanup(&self->payload_read_);
+-            return;
+-        }
+-
+-        if (transfer->actual_length != transfer->length) {
+-            std::string msg =
+-                    StringPrintf("usb read: unexpected length for payload: wanted %d, got %d",
+-                                 transfer->length, transfer->actual_length);
+-            LOG(ERROR) << msg;
+-            self->OnError(msg);
+-            self->Cleanup(&self->payload_read_);
+-            return;
+-        }
+-
+-        CHECK(self->incoming_header_.has_value());
+-        self->HandlePacket(*self->incoming_header_, std::move(read_block->block));
+-        self->incoming_header_.reset();
+-
+-        read_block->active = false;
+-        self->SubmitRead(&self->header_read_, sizeof(amessage));
+-    }
+-
+-    static void LIBUSB_CALL write_cb(libusb_transfer* transfer) {
+-        auto write_block = static_cast<WriteBlock*>(transfer->user_data);
+-        auto self = write_block->self;
+-
+-        bool succeeded = transfer->status == LIBUSB_TRANSFER_COMPLETED;
+-
+-        {
+-            std::lock_guard<std::mutex> lock(self->write_mutex_);
+-            libusb_free_transfer(transfer);
+-            self->writes_.erase(write_block->id);
+-
+-            if (self->terminated_ && self->writes_.empty()) {
+-                self->destruction_cv_.notify_one();
+-            }
+-        }
+-
+-        if (!succeeded && !self->detached_) {
+-            self->OnError("libusb write failed");
+-        }
+-    }
+-
+-    bool DoTlsHandshake(RSA*, std::string*) final {
+-        LOG(FATAL) << "tls not supported";
+-        return false;
+-    }
+-
+-    void CreateRead(ReadBlock* read, bool header) {
+-        read->self = this;
+-        read->transfer = libusb_alloc_transfer(0);
+-        if (!read->transfer) {
+-            LOG(FATAL) << "failed to allocate libusb_transfer for read";
+-        }
+-        libusb_fill_bulk_transfer(read->transfer, device_handle_.get(), read_endpoint_, nullptr, 0,
+-                                  header ? header_read_cb : payload_read_cb, read, 0);
+-    }
+-
+-    void SubmitRead(ReadBlock* read, size_t length) {
+-        read->block.resize(length);
+-        read->transfer->buffer = reinterpret_cast<unsigned char*>(read->block.data());
+-        read->transfer->length = length;
+-        read->active = true;
+-        int rc = libusb_submit_transfer(read->transfer);
+-        if (rc != 0) {
+-            LOG(ERROR) << "libusb_submit_transfer failed: " << libusb_strerror(static_cast<libusb_error>(rc));
+-        }
+-    }
+-
+-    void SubmitWrite(Block&& block) REQUIRES(write_mutex_) {
+-        // TODO: Reuse write blocks.
+-        auto write = std::make_unique<WriteBlock>();
+-
+-        write->self = this;
+-        write->id = TransferId::write(next_write_id_++);
+-        write->block = std::move(block);
+-        write->transfer = libusb_alloc_transfer(0);
+-        if (!write->transfer) {
+-            LOG(FATAL) << "failed to allocate libusb_transfer for write";
+-        }
+-
+-        libusb_fill_bulk_transfer(write->transfer, device_handle_.get(), write_endpoint_,
+-                                  reinterpret_cast<unsigned char*>(write->block.data()),
+-                                  write->block.size(), &write_cb, write.get(), 0);
+-        int rc = libusb_submit_transfer(write->transfer);
+-        if (rc == 0) {
+-            writes_[write->id] = std::move(write);
+-        } else {
+-            LOG(ERROR) << "libusb_submit_transfer failed: " << libusb_strerror(static_cast<libusb_error>(rc));
+-            libusb_free_transfer(write->transfer);
+-        }
+-    }
+-
+-    bool Write(std::unique_ptr<apacket> packet) final {
+-        VLOG(USB) << "USB write: " << dump_header(&packet->msg);
+-        Block header;
+-        header.resize(sizeof(packet->msg));
+-        memcpy(header.data(), &packet->msg, sizeof(packet->msg));
+-
+-        std::lock_guard<std::mutex> lock(write_mutex_);
+-        if (terminated_) {
+-            return false;
+-        }
+-
+-        if (detached_) {
+-            return true;
+-        }
+-
+-        SubmitWrite(std::move(header));
+-        if (!packet->payload.empty()) {
+-            size_t payload_length = packet->payload.size();
+-            SubmitWrite(std::move(packet->payload));
+-
+-            // If the payload is a multiple of the endpoint packet size, we
+-            // need an explicit zero-sized transfer.
+-            if (should_perform_zero_transfer(payload_length, zero_mask_)) {
+-                VLOG(USB) << "submitting zero transfer for payload length " << payload_length;
+-                Block empty;
+-                SubmitWrite(std::move(empty));
+-            }
+-        }
+-
+-        return true;
+-    }
+-
+-    std::optional<libusb_device_descriptor> GetDeviceDescriptor() {
+-        libusb_device_descriptor device_desc;
+-        int rc = libusb_get_device_descriptor(device_.get(), &device_desc);
+-        if (rc != 0) {
+-            LOG(WARNING) << "failed to get device descriptor for device at " << device_address_
+-                         << ": " << libusb_error_name(rc);
+-            return {};
+-        }
+-        return device_desc;
+-    }
+-
+-    bool FindInterface(libusb_device_descriptor* device_desc) {
+-        if (device_desc->bDeviceClass != LIBUSB_CLASS_PER_INTERFACE) {
+-            // Assume that all Android devices have the device class set to per interface.
+-            // TODO: Is this assumption valid?
+-            VLOG(USB) << "skipping device with incorrect class at " << device_address_;
+-            return false;
+-        }
+-
+-        libusb_config_descriptor* config_raw;
+-        int rc = libusb_get_active_config_descriptor(device_.get(), &config_raw);
+-        if (rc != 0) {
+-            LOG(WARNING) << "failed to get active config descriptor for device at "
+-                         << device_address_ << ": " << libusb_error_name(rc);
+-            return false;
+-        }
+-        const unique_config_descriptor config(config_raw);
+-
+-        // Use size_t for interface_num so <iostream>s don't mangle it.
+-        size_t interface_num;
+-        uint16_t zero_mask = 0;
+-        uint8_t bulk_in = 0, bulk_out = 0;
+-        size_t packet_size = 0;
+-        bool found_adb = false;
+-
+-        for (interface_num = 0; interface_num < config->bNumInterfaces; ++interface_num) {
+-            const libusb_interface& interface = config->interface[interface_num];
+-
+-            if (interface.num_altsetting == 0) {
+-                continue;
+-            }
+-
+-            const libusb_interface_descriptor& interface_desc = interface.altsetting[0];
+-            if (!is_adb_interface(interface_desc.bInterfaceClass, interface_desc.bInterfaceSubClass,
+-                                  interface_desc.bInterfaceProtocol)) {
+-                VLOG(USB) << "skipping non-adb interface at " << device_address_ << " (interface "
+-                          << interface_num << ")";
+-                continue;
+-            }
+-
+-            if (interface.num_altsetting != 1) {
+-                // Assume that interfaces with alternate settings aren't adb interfaces.
+-                // TODO: Is this assumption valid?
+-                LOG(WARNING) << "skipping interface with unexpected num_altsetting at "
+-                             << device_address_ << " (interface " << interface_num << ")";
+-                continue;
+-            }
+-
+-            VLOG(USB) << "found potential adb interface at " << device_address_ << " (interface "
+-                      << interface_num << ")";
+-
+-            bool found_in = false;
+-            bool found_out = false;
+-            for (size_t endpoint_num = 0; endpoint_num < interface_desc.bNumEndpoints;
+-                 ++endpoint_num) {
+-                const auto& endpoint_desc = interface_desc.endpoint[endpoint_num];
+-                const uint8_t endpoint_addr = endpoint_desc.bEndpointAddress;
+-                const uint8_t endpoint_attr = endpoint_desc.bmAttributes;
+-
+-                const uint8_t transfer_type = endpoint_attr & LIBUSB_TRANSFER_TYPE_MASK;
+-
+-                if (transfer_type != LIBUSB_TRANSFER_TYPE_BULK) {
+-                    continue;
+-                }
+-
+-                if (endpoint_is_output(endpoint_addr) && !found_out) {
+-                    found_out = true;
+-                    bulk_out = endpoint_addr;
+-                    zero_mask = endpoint_desc.wMaxPacketSize - 1;
+-                } else if (!endpoint_is_output(endpoint_addr) && !found_in) {
+-                    found_in = true;
+-                    bulk_in = endpoint_addr;
+-                }
+-
+-                size_t endpoint_packet_size = endpoint_desc.wMaxPacketSize;
+-                CHECK(endpoint_packet_size != 0);
+-                if (packet_size == 0) {
+-                    packet_size = endpoint_packet_size;
+-                } else {
+-                    CHECK(packet_size == endpoint_packet_size);
+-                }
+-            }
+-
+-            if (found_in && found_out) {
+-                found_adb = true;
+-                break;
+-            } else {
+-                VLOG(USB) << "rejecting potential adb interface at " << device_address_
+-                          << "(interface " << interface_num << "): missing bulk endpoints "
+-                          << "(found_in = " << found_in << ", found_out = " << found_out << ")";
+-            }
+-        }
+-
+-        if (!found_adb) {
+-            return false;
+-        }
+-
+-        interface_num_ = interface_num;
+-        write_endpoint_ = bulk_out;
+-        read_endpoint_ = bulk_in;
+-        zero_mask_ = zero_mask;
+-        return true;
+-    }
+-
+-    std::string GetUsbDeviceAddress() const { return std::string("usb:") + device_address_; }
+-
+-    std::string GetSerial() {
+-        std::string serial;
+-
+-        auto device_desc = GetDeviceDescriptor();
+-
+-        serial.resize(255);
+-        int rc = libusb_get_string_descriptor_ascii(
+-                device_handle_.get(), device_desc->iSerialNumber,
+-                reinterpret_cast<unsigned char*>(&serial[0]), serial.length());
+-        if (rc == 0) {
+-            LOG(WARNING) << "received empty serial from device at " << device_address_;
+-            return {};
+-        } else if (rc < 0) {
+-            LOG(WARNING) << "failed to get serial from device at " << device_address_
+-                         << libusb_error_name(rc);
+-            return {};
+-        }
+-        serial.resize(rc);
+-
+-        return serial;
+-    }
+-
+-    // libusb gives us an int which is a value from 'enum libusb_speed'
+-    static uint64_t ToConnectionSpeed(int speed) {
+-        switch (speed) {
+-            case LIBUSB_SPEED_LOW:
+-                return 1;
+-            case LIBUSB_SPEED_FULL:
+-                return 12;
+-            case LIBUSB_SPEED_HIGH:
+-                return 480;
+-            case LIBUSB_SPEED_SUPER:
+-                return 5000;
+-            case LIBUSB_SPEED_SUPER_PLUS:
+-                return 10000;
+-            case LIBUSB_SPEED_SUPER_PLUS_X2:
+-                return 20000;
+-            case LIBUSB_SPEED_UNKNOWN:
+-            default:
+-                return 0;
+-        }
+-    }
+-
+-    // libusb gives us a bitfield made of 'enum libusb_supported_speed' values
+-    static uint64_t ExtractMaxSuperSpeed(uint16_t wSpeedSupported) {
+-        if (wSpeedSupported == 0) {
+-            return 0;
+-        }
+-
+-        int msb = 0;
+-        while (wSpeedSupported >>= 1) {
+-            msb++;
+-        }
+-
+-        switch (1 << msb) {
+-            case LIBUSB_LOW_SPEED_OPERATION:
+-                return 1;
+-            case LIBUSB_FULL_SPEED_OPERATION:
+-                return 12;
+-            case LIBUSB_HIGH_SPEED_OPERATION:
+-                return 480;
+-            case LIBUSB_SUPER_SPEED_OPERATION:
+-                return 5000;
+-            default:
+-                return 0;
+-        }
+-    }
+-
+-    static uint64_t ExtractMaxSuperSpeedPlus(libusb_ssplus_usb_device_capability_descriptor* cap) {
+-        // The exponents is one of {bytes, kB, MB, or GB}. We express speed in MB so we use a 0
+-        // multiplier for value which would result in 0MB anyway.
+-        static uint64_t exponent[] = {0, 0, 1, 1000};
+-        uint64_t max_speed = 0;
+-        for (uint8_t i = 0; i < cap->numSublinkSpeedAttributes; i++) {
+-            libusb_ssplus_sublink_attribute* attr = &cap->sublinkSpeedAttributes[i];
+-            uint64_t speed = attr->mantissa * exponent[attr->exponent];
+-            max_speed = std::max(max_speed, speed);
+-        }
+-        return max_speed;
+-    }
+-
+-    void RetrieveSpeeds() {
+-        negotiated_speed_ = ToConnectionSpeed(libusb_get_device_speed(device_.get()));
+-
+-        // To discover the maximum speed supported by an USB device, we walk its capability
+-        // descriptors.
+-        struct libusb_bos_descriptor* bos = nullptr;
+-        if (libusb_get_bos_descriptor(device_handle_.get(), &bos)) {
+-            return;
+-        }
+-
+-        for (int i = 0; i < bos->bNumDeviceCaps; i++) {
+-            switch (bos->dev_capability[i]->bDevCapabilityType) {
+-                case LIBUSB_BT_SS_USB_DEVICE_CAPABILITY: {
+-                    libusb_ss_usb_device_capability_descriptor* cap = nullptr;
+-                    if (!libusb_get_ss_usb_device_capability_descriptor(
+-                                nullptr, bos->dev_capability[i], &cap)) {
+-                        max_speed_ =
+-                                std::max(max_speed_, ExtractMaxSuperSpeed(cap->wSpeedSupported));
+-                        libusb_free_ss_usb_device_capability_descriptor(cap);
+-                    }
+-                } break;
+-                case LIBUSB_BT_SUPERSPEED_PLUS_CAPABILITY: {
+-                    libusb_ssplus_usb_device_capability_descriptor* cap = nullptr;
+-                    if (!libusb_get_ssplus_usb_device_capability_descriptor(
+-                                nullptr, bos->dev_capability[i], &cap)) {
+-                        max_speed_ = std::max(max_speed_, ExtractMaxSuperSpeedPlus(cap));
+-                        libusb_free_ssplus_usb_device_capability_descriptor(cap);
+-                    }
+-                } break;
+-                default:
+-                    break;
+-            }
+-        }
+-        libusb_free_bos_descriptor(bos);
+-    }
+-
+-    bool OpenDevice(std::string* error) {
+-        if (device_handle_) {
+-            LOG_ERR(error, "device already open");
+-            return false;
+-        }
+-
+-        libusb_device_handle* handle_raw;
+-        int rc = libusb_open(device_.get(), &handle_raw);
+-        if (rc != 0) {
+-            // TODO: Handle no permissions.
+-            LOG_ERR(error, "failed to open device: %s", libusb_strerror(static_cast<libusb_error>(rc)));
+-            return false;
+-        }
+-
+-        unique_device_handle handle(handle_raw);
+-        device_handle_ = std::move(handle);
+-
+-        auto device_desc = GetDeviceDescriptor();
+-        if (!device_desc) {
+-            LOG_ERR(error, "failed to get device descriptor");
+-            device_handle_.reset();
+-            return false;
+-        }
+-
+-        if (!FindInterface(&device_desc.value())) {
+-            LOG_ERR(error, "failed to find adb interface");
+-            device_handle_.reset();
+-            return false;
+-        }
+-
+-        serial_ = GetSerial();
+-
+-        VLOG(USB) << "successfully opened adb device at " << device_address_ << ", "
+-                  << StringPrintf("bulk_in = %#x, bulk_out = %#x", read_endpoint_, write_endpoint_);
+-
+-        // WARNING: this isn't released via RAII.
+-        rc = libusb_claim_interface(device_handle_.get(), interface_num_);
+-        if (rc != 0) {
+-            LOG_ERR(error, "failed to claim adb interface for device '%s': %s", serial_.c_str(),
+-                    libusb_error_name(rc));
+-            device_handle_.reset();
+-            return false;
+-        }
+-
+-        for (uint8_t endpoint : {read_endpoint_, write_endpoint_}) {
+-            rc = libusb_clear_halt(device_handle_.get(), endpoint);
+-            if (rc != 0) {
+-                LOG_ERR(error, "failed to clear halt on device '%s' endpoint %#02x: %s",
+-                        serial_.c_str(), endpoint, libusb_error_name(rc));
+-                libusb_release_interface(device_handle_.get(), interface_num_);
+-                device_handle_.reset();
+-                return false;
+-            }
+-        }
+-
+-        RetrieveSpeeds();
+-        return true;
+-    }
+-
+-    void CancelReadTransfer(ReadBlock* read_block) REQUIRES(read_mutex_) {
+-        if (!read_block->transfer) {
+-            return;
+-        }
+-
+-        if (!read_block->active) {
+-            // There is no read_cb pending. Clean it up right now.
+-            Cleanup(read_block);
+-            return;
+-        }
+-
+-        int rc = libusb_cancel_transfer(read_block->transfer);
+-        if (rc != 0) {
+-            LOG(WARNING) << "libusb_cancel_transfer failed: " << libusb_error_name(rc);
+-            // There is no read_cb pending. Clean it up right now.
+-            Cleanup(read_block);
+-            return;
+-        }
+-    }
+-
+-    void CloseDevice() {
+-        // This is rather messy, because of the lifecyle of libusb_transfers.
+-        //
+-        // We can't call libusb_free_transfer for a submitted transfer, we have to cancel it
+-        // and free it in the callback. Complicating things more, it's possible for us to be in
+-        // the callback for a transfer as the destructor is being called, at which point cancelling
+-        // the transfer won't do anything (and it's possible that we'll submit the transfer again
+-        // in the callback).
+-        //
+-        // Resolve this by setting an atomic flag before we lock to cancel transfers, and take the
+-        // lock in the callbacks before checking the flag.
+-
+-        if (terminated_) {
+-            return;
+-        }
+-
+-        terminated_ = true;
+-
+-        {
+-            std::unique_lock<std::mutex> lock(write_mutex_);
+-            ScopedLockAssertion assumed_locked(write_mutex_);
+-
+-            std::erase_if(writes_, [](const auto& write_item) {
+-                auto const& [id, write_block] = write_item;
+-                int rc = libusb_cancel_transfer(write_block->transfer);
+-                if (rc != 0) {
+-                    // libusb_cancel_transfer failed for some reason. We will
+-                    // never get a callback for this transfer. So we need to
+-                    // remove it from the list or we will hang below.
+-                    LOG(INFO) << "libusb_cancel_transfer failed: " << libusb_error_name(rc);
+-                    libusb_free_transfer(write_block->transfer);
+-                    return true;
+-                }
+-                // Wait for the write_cb to fire before removing.
+-                return false;
+-            });
+-
+-            // Wait here until the write callbacks have all fired and removed
+-            // the remaining writes_.
+-            destruction_cv_.wait(lock, [this]() {
+-                ScopedLockAssertion assumed_locked(write_mutex_);
+-                return writes_.empty();
+-            });
+-        }
+-
+-        {
+-            std::unique_lock<std::mutex> lock(read_mutex_);
+-            ScopedLockAssertion assumed_locked(read_mutex_);
+-
+-            CancelReadTransfer(&header_read_);
+-            CancelReadTransfer(&payload_read_);
+-
+-            destruction_cv_.wait(lock, [this]() {
+-                ScopedLockAssertion assumed_locked(read_mutex_);
+-                return !header_read_.active && !payload_read_.active;
+-            });
+-
+-            incoming_header_.reset();
+-            incoming_payload_.clear();
+-        }
+-
+-        if (device_handle_) {
+-            int rc = libusb_release_interface(device_handle_.get(), interface_num_);
+-            if (rc != 0) {
+-                LOG(WARNING) << "libusb_release_interface failed: " << libusb_error_name(rc);
+-            }
+-            device_handle_.reset();
+-        }
+-    }
+-
+-    bool StartImpl(std::string* error) {
+-        if (!device_handle_) {
+-            *error = "device not opened";
+-            return false;
+-        }
+-
+-        VLOG(USB) << "registered new usb device '" << serial_ << "'";
+-        std::lock_guard lock(read_mutex_);
+-        CreateRead(&header_read_, true);
+-        CreateRead(&payload_read_, false);
+-        SubmitRead(&header_read_, sizeof(amessage));
+-
+-        return true;
+-    }
+-
+-    void OnError(const std::string& error) {
+-        std::call_once(error_flag_, [this, &error]() {
+-            if (transport_) {
+-                transport_->HandleError(error);
+-            }
+-        });
+-    }
+-
+-    virtual bool Attach(std::string* error) override final {
+-        terminated_ = false;
+-        detached_ = false;
+-
+-        if (!OpenDevice(error)) {
+-            return false;
+-        }
+-
+-        if (!StartImpl(error)) {
+-            CloseDevice();
+-            return false;
+-        }
+-
+-        return true;
+-    }
+-
+-    virtual bool Detach(std::string* error) override final {
+-        detached_ = true;
+-        CloseDevice();
+-        return true;
+-    }
+-
+-    virtual void Reset() override final {
+-        VLOG(USB) << "resetting " << transport_->serial_name();
+-        int rc = libusb_reset_device(device_handle_.get());
+-        if (rc == 0) {
+-            libusb_device* device = libusb_ref_device(device_.get());
+-
+-            Stop();
+-
+-            fdevent_run_on_looper([device]() {
+-                process_device(device);
+-                libusb_unref_device(device);
+-            });
+-        } else {
+-            LOG(ERROR) << "libusb_reset_device failed: " << libusb_error_name(rc);
+-        }
+-    }
+-
+-    virtual void Start() override final {
+-        std::string error;
+-        if (!Attach(&error)) {
+-            OnError(error);
+-        }
+-    }
+-
+-    virtual void Stop() override final {
+-        CloseDevice();
+-        OnError("requested stop");
+-    }
+-
+-    static std::optional<std::shared_ptr<LibusbConnection>> Create(unique_device device) {
+-        auto connection = std::make_unique<LibusbConnection>(std::move(device));
+-        if (!connection) {
+-            LOG(FATAL) << "failed to construct LibusbConnection";
+-        }
+-
+-        auto device_desc = connection->GetDeviceDescriptor();
+-        if (!device_desc) {
+-            VLOG(USB) << "ignoring device " << connection->GetUsbDeviceAddress()
+-                      << ": not an adb interface. (GetDeviceDescriptor)";
+-            return {};
+-        }
+-
+-        if (!connection->FindInterface(&device_desc.value())) {
+-            VLOG(USB) << "ignoring device " << connection->GetUsbDeviceAddress()
+-                      << ": not an adb interface. (FindInterface)";
+-            return {};
+-        }
+-
+-#if defined(__linux__)
+-        std::string device_serial;
+-        if (android::base::ReadFileToString(get_device_serial_path(connection->device_.get()),
+-                                            &device_serial)) {
+-            connection->serial_ = android::base::Trim(device_serial);
+-        } else {
+-            // We don't actually want to treat an unknown serial as an error because
+-            // devices aren't able to communicate a serial number in early bringup.
+-            // http://b/20883914
+-            connection->serial_ = "<unknown>";
+-        }
+-#else
+-        // We need to open the device to get its serial on Windows and OS X.
+-        std::string error;
+-        if (!connection->OpenDevice(&error)) {
+-            VLOG(USB) << "ignoring device " << connection->GetUsbDeviceAddress()
+-                      << ": not an adb interface. (OpenDevice)";
+-            return {};
+-        }
+-        connection->serial_ = connection->GetSerial();
+-        connection->CloseDevice();
+-#endif
+-        if (!transport_server_owns_device(connection->GetUsbDeviceAddress(), connection->serial_)) {
+-            VLOG(USB) << "ignoring device " << connection->GetUsbDeviceAddress() << " serial "
+-                      << connection->serial_ << ": this server owns '" << transport_get_one_device()
+-                      << "'";
+-            return {};
+-        }
+-
+-        return connection;
+-    }
+-
+-    virtual uint64_t MaxSpeedMbps() override final { return max_speed_; }
+-
+-    virtual uint64_t NegotiatedSpeedMbps() override final { return negotiated_speed_; }
+-
+-    unique_device device_;
+-    unique_device_handle device_handle_;
+-    std::string device_address_;
+-    std::string serial_ = "<unknown>";
+-
+-    uint32_t interface_num_;
+-    uint8_t write_endpoint_;
+-    uint8_t read_endpoint_;
+-
+-    std::mutex read_mutex_;
+-    ReadBlock header_read_ GUARDED_BY(read_mutex_);
+-    ReadBlock payload_read_ GUARDED_BY(read_mutex_);
+-    std::optional<amessage> incoming_header_ GUARDED_BY(read_mutex_);
+-    IOVector incoming_payload_ GUARDED_BY(read_mutex_);
+-
+-    std::mutex write_mutex_;
+-    std::unordered_map<TransferId, std::unique_ptr<WriteBlock>> writes_ GUARDED_BY(write_mutex_);
+-    std::atomic<size_t> next_write_id_ = 0;
+-
+-    std::once_flag error_flag_;
+-    std::atomic<bool> terminated_ = false;
+-    std::atomic<bool> detached_ = false;
+-    std::condition_variable destruction_cv_;
+-
+-    size_t zero_mask_ = 0;
+-
+-    uint64_t negotiated_speed_ = 0;
+-    uint64_t max_speed_ = 0;
+-};
+-
+-static std::mutex usb_handles_mutex [[clang::no_destroy]];
+-static std::unordered_map<libusb_device*, std::weak_ptr<LibusbConnection>> usb_handles
+-        [[clang::no_destroy]] GUARDED_BY(usb_handles_mutex);
+-static std::atomic<int> connecting_devices(0);
+-
+-static void process_device(libusb_device* device_raw) {
+-    std::string device_address = "usb:" + get_device_address(device_raw);
+-    VLOG(USB) << "device connected: " << device_address;
+-
+-    unique_device device(libusb_ref_device(device_raw));
+-    auto connection_opt = LibusbConnection::Create(std::move(device));
+-    if (!connection_opt) {
+-        return;
+-    }
+-
+-    auto connection = *connection_opt;
+-
+-    {
+-        std::lock_guard<std::mutex> lock(usb_handles_mutex);
+-        usb_handles.emplace(libusb_ref_device(device_raw), connection);
+-    }
+-
+-    VLOG(USB) << "constructed LibusbConnection for device " << connection->serial_ << " ("
+-              << device_address << ")";
+-
+-    register_usb_transport(connection, connection->serial_.c_str(), device_address.c_str(), true);
+-}
+-
+-static void device_connected(libusb_device* device) {
+-#if defined(__linux__)
+-    // Android's host linux libusb uses netlink instead of udev for device hotplug notification,
+-    // which means we can get hotplug notifications before udev has updated ownership/perms on the
+-    // device. Since we're not going to be able to link against the system's libudev any time soon,
+-    // poll for accessibility changes with inotify until a timeout expires.
+-    libusb_ref_device(device);
+-    auto thread = std::thread([device]() {
+-        std::string bus_path = StringPrintf("/dev/bus/usb/%03d/", libusb_get_bus_number(device));
+-        std::string device_path =
+-                StringPrintf("%s/%03d", bus_path.c_str(), libusb_get_device_address(device));
+-        auto deadline = std::chrono::steady_clock::now() + 1s;
+-        unique_fd infd(inotify_init1(IN_CLOEXEC | IN_NONBLOCK));
+-        if (infd == -1) {
+-            PLOG(FATAL) << "failed to create inotify fd";
+-        }
+-
+-        // Register the watch first, and then check for accessibility, to avoid a race.
+-        // We can't watch the device file itself, as that requires us to be able to access it.
+-        if (inotify_add_watch(infd.get(), bus_path.c_str(), IN_ATTRIB) == -1) {
+-            PLOG(ERROR) << "failed to register inotify watch on '" << bus_path
+-                        << "', falling back to sleep";
+-            std::this_thread::sleep_for(std::chrono::seconds(1));
+-        } else {
+-            adb_pollfd pfd = {.fd = infd.get(), .events = POLLIN, .revents = 0};
+-
+-            while (access(device_path.c_str(), R_OK | W_OK) == -1) {
+-                auto timeout = deadline - std::chrono::steady_clock::now();
+-                if (timeout < 0s) {
+-                    break;
+-                }
+-
+-                uint64_t ms = timeout / 1ms;
+-                int rc = adb_poll(&pfd, 1, ms);
+-                if (rc == -1) {
+-                    if (errno == EINTR) {
+-                        continue;
+-                    } else {
+-                        LOG(WARNING) << "timeout expired while waiting for device accessibility";
+-                        break;
+-                    }
+-                }
+-
+-                union {
+-                    struct inotify_event ev;
+-                    char bytes[sizeof(struct inotify_event) + NAME_MAX + 1];
+-                } buf;
+-
+-                rc = adb_read(infd.get(), &buf, sizeof(buf));
+-                if (rc == -1) {
+-                    break;
+-                }
+-
+-                // We don't actually care about the data: we might get spurious events for
+-                // other devices on the bus, but we'll double check in the loop condition.
+-                continue;
+-            }
+-        }
+-
+-        process_device(device);
+-        if (--connecting_devices == 0) {
+-            adb_notify_device_scan_complete();
+-        }
+-        libusb_unref_device(device);
+-    });
+-    thread.detach();
+-#else
+-    process_device(device);
+-#endif
+-}
+-
+-static void device_disconnected(libusb_device* device) {
+-    usb_handles_mutex.lock();
+-    auto it = usb_handles.find(device);
+-    if (it != usb_handles.end()) {
+-        // We need to ensure that we don't destroy the LibusbConnection on this thread,
+-        // as we're in a context with internal libusb mutexes held.
+-        libusb_device* device = it->first;
+-        std::weak_ptr<LibusbConnection> connection_weak = it->second;
+-        usb_handles.erase(it);
+-        fdevent_run_on_looper([connection_weak]() {
+-            auto connection = connection_weak.lock();
+-            if (connection) {
+-                connection->Stop();
+-                VLOG(USB) << "libusb_hotplug: device disconnected: " << connection->serial_;
+-            } else {
+-                VLOG(USB) << "libusb_hotplug: device disconnected: (destroyed)";
+-            }
+-        });
+-        libusb_unref_device(device);
+-    }
+-    usb_handles_mutex.unlock();
+-}
+-
+-static auto& hotplug_queue = *new BlockingQueue<std::pair<libusb_hotplug_event, libusb_device*>>();
+-static void hotplug_thread() {
+-    VLOG(USB) << "libusb hotplug thread started";
+-    adb_thread_setname("libusb hotplug");
+-    while (true) {
+-        hotplug_queue.PopAll([](std::pair<libusb_hotplug_event, libusb_device*> pair) {
+-            libusb_hotplug_event event = pair.first;
+-            libusb_device* device = pair.second;
+-            if (event == LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED) {
+-                VLOG(USB) << "libusb hotplug: device arrived";
+-                device_connected(device);
+-            } else if (event == LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT) {
+-                VLOG(USB) << "libusb hotplug: device left";
+-                device_disconnected(device);
+-            } else {
+-                LOG(WARNING) << "unknown libusb hotplug event: " << event;
+-            }
+-        });
+-    }
+-}
+-
+-static LIBUSB_CALL int hotplug_callback(libusb_context*, libusb_device* device,
+-                                        libusb_hotplug_event event, void*) {
+-    // We're called with the libusb lock taken. Call these on a separate thread outside of this
+-    // function so that the usb_handle mutex is always taken before the libusb mutex.
+-    static std::once_flag once;
+-    std::call_once(once, []() { std::thread(hotplug_thread).detach(); });
+-
+-    if (event == LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED) {
+-        ++connecting_devices;
+-    }
+-    hotplug_queue.Push({event, device});
+-    return 0;
+-}
+-
+-namespace libusb {
+-
+-void usb_init() {
+-    VLOG(USB) << "initializing libusb...";
+-    int rc = libusb_init(nullptr);
+-    if (rc != 0) {
+-        LOG(WARNING) << "failed to initialize libusb: " << libusb_error_name(rc);
+-        return;
+-    }
+-
+-    // Register the hotplug callback.
+-    rc = libusb_hotplug_register_callback(
+-            nullptr,
+-            static_cast<libusb_hotplug_event>(LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED |
+-                                              LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT),
+-            LIBUSB_HOTPLUG_ENUMERATE, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY,
+-            LIBUSB_CLASS_PER_INTERFACE, hotplug_callback, nullptr, nullptr);
+-
+-    if (rc != LIBUSB_SUCCESS) {
+-        LOG(FATAL) << "failed to register libusb hotplug callback";
+-    }
+-
+-    // Spawn a thread for libusb_handle_events.
+-    std::thread([]() {
+-        adb_thread_setname("libusb");
+-        while (true) {
+-            libusb_handle_events(nullptr);
+-        }
+-    }).detach();
+-}
+-
+-}  // namespace libusb
+diff --git a/client/usb_osx.cpp b/client/usb_osx.cpp
+index ce3f5df..8b13789 100644
+--- a/client/usb_osx.cpp
++++ b/client/usb_osx.cpp
+@@ -1,637 +1 @@
+-/*
+- * Copyright (C) 2007 The Android Open Source Project
+- *
+- * Licensed under the Apache License, Version 2.0 (the "License");
+- * you may not use this file except in compliance with the License.
+- * You may obtain a copy of the License at
+- *
+- *      http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+ 
+-#define TRACE_TAG USB
+-
+-#include "sysdeps.h"
+-
+-#include "client/usb.h"
+-
+-#include <CoreFoundation/CoreFoundation.h>
+-
+-#include <IOKit/IOKitLib.h>
+-#include <IOKit/IOCFPlugIn.h>
+-#include <IOKit/usb/IOUSBLib.h>
+-#include <IOKit/IOMessage.h>
+-#include <mach/mach_port.h>
+-
+-#include <inttypes.h>
+-#include <stdio.h>
+-
+-#include <atomic>
+-#include <chrono>
+-#include <memory>
+-#include <mutex>
+-#include <thread>
+-#include <vector>
+-
+-#include <android-base/logging.h>
+-#include <android-base/stringprintf.h>
+-#include <android-base/thread_annotations.h>
+-
+-#include "adb.h"
+-#include "transport.h"
+-
+-using namespace std::chrono_literals;
+-
+-struct usb_handle
+-{
+-    UInt8 bulkIn;
+-    UInt8 bulkOut;
+-    IOUSBInterfaceInterface550** interface;
+-    unsigned int zero_mask;
+-    size_t max_packet_size;
+-
+-    // For garbage collecting disconnected devices.
+-    bool mark;
+-    std::string devpath;
+-    std::atomic<bool> dead;
+-
+-    usb_handle()
+-        : bulkIn(0),
+-          bulkOut(0),
+-          interface(nullptr),
+-          zero_mask(0),
+-          max_packet_size(0),
+-          mark(false),
+-          dead(false) {}
+-};
+-
+-static std::atomic<bool> usb_inited_flag;
+-
+-static auto& g_usb_handles_mutex = *new std::mutex();
+-static auto& g_usb_handles = *new std::vector<std::unique_ptr<usb_handle>>();
+-
+-static bool IsKnownDevice(const std::string& devpath) {
+-    std::lock_guard<std::mutex> lock_guard(g_usb_handles_mutex);
+-    for (auto& usb : g_usb_handles) {
+-        if (usb->devpath == devpath) {
+-            // Set mark flag to indicate this device is still alive.
+-            usb->mark = true;
+-            return true;
+-        }
+-    }
+-    return false;
+-}
+-
+-static void usb_kick_locked(usb_handle* handle);
+-
+-static void KickDisconnectedDevices() {
+-    std::lock_guard<std::mutex> lock_guard(g_usb_handles_mutex);
+-    for (auto& usb : g_usb_handles) {
+-        if (!usb->mark) {
+-            usb_kick_locked(usb.get());
+-        } else {
+-            usb->mark = false;
+-        }
+-    }
+-}
+-
+-static void AddDevice(std::unique_ptr<usb_handle> handle) {
+-    handle->mark = true;
+-    std::lock_guard<std::mutex> lock(g_usb_handles_mutex);
+-    g_usb_handles.push_back(std::move(handle));
+-}
+-
+-static void AndroidInterfaceAdded(io_iterator_t iterator);
+-static std::unique_ptr<usb_handle> CheckInterface(IOUSBInterfaceInterface550** iface, UInt16 vendor,
+-                                                  UInt16 product);
+-
+-// Flag-guarded (using host env variable) feature that turns on
+-// the ability to clear the device-side endpoint also before
+-// starting. See public bug https://issuetracker.google.com/issues/37055927
+-// for historical context.
+-static bool clear_endpoints() {
+-    static const char* env(getenv("ADB_OSX_USB_CLEAR_ENDPOINTS"));
+-    static bool result = env && strcmp("1", env) == 0;
+-    return result;
+-}
+-
+-static bool FindUSBDevices() {
+-    // Create the matching dictionary to find the Android device's adb interface.
+-    CFMutableDictionaryRef matchingDict = IOServiceMatching(kIOUSBInterfaceClassName);
+-    if (!matchingDict) {
+-        LOG(ERROR) << "couldn't create USB matching dictionary";
+-        return false;
+-    }
+-    // Create an iterator for all I/O Registry objects that match the dictionary.
+-    io_iterator_t iter = 0;
+-    kern_return_t kr = IOServiceGetMatchingServices(kIOMasterPortDefault, matchingDict, &iter);
+-    if (kr != KERN_SUCCESS) {
+-        LOG(ERROR) << "failed to get matching services";
+-        return false;
+-    }
+-    // Iterate over all matching objects.
+-    AndroidInterfaceAdded(iter);
+-    IOObjectRelease(iter);
+-    return true;
+-}
+-
+-static void
+-AndroidInterfaceAdded(io_iterator_t iterator)
+-{
+-    kern_return_t            kr;
+-    io_service_t             usbDevice;
+-    io_service_t             usbInterface;
+-    IOCFPlugInInterface      **plugInInterface = NULL;
+-    IOUSBInterfaceInterface500  **iface = NULL;
+-    IOUSBDeviceInterface500  **dev = NULL;
+-    HRESULT                  result;
+-    SInt32                   score;
+-    uint32_t                 locationId;
+-    UInt8                    if_class, subclass, protocol;
+-    UInt16                   vendor;
+-    UInt16                   product;
+-    UInt8                    serialIndex;
+-    char                     serial[256];
+-    std::string devpath;
+-
+-    while ((usbInterface = IOIteratorNext(iterator))) {
+-        //* Create an intermediate interface plugin
+-        kr = IOCreatePlugInInterfaceForService(usbInterface,
+-                                               kIOUSBInterfaceUserClientTypeID,
+-                                               kIOCFPlugInInterfaceID,
+-                                               &plugInInterface, &score);
+-        IOObjectRelease(usbInterface);
+-        if ((kIOReturnSuccess != kr) || (!plugInInterface)) {
+-            LOG(ERROR) << "Unable to create an interface plug-in (" << std::hex << kr << ")";
+-            continue;
+-        }
+-
+-        //* This gets us the interface object
+-        result = (*plugInInterface)->QueryInterface(
+-            plugInInterface,
+-            CFUUIDGetUUIDBytes(kIOUSBInterfaceInterfaceID500), (LPVOID*)&iface);
+-        //* We only needed the plugin to get the interface, so discard it
+-        (*plugInInterface)->Release(plugInInterface);
+-        if (result || !iface) {
+-            LOG(ERROR) << "Couldn't query the interface (" << std::hex << result << ")";
+-            continue;
+-        }
+-
+-        kr = (*iface)->GetInterfaceClass(iface, &if_class);
+-        kr = (*iface)->GetInterfaceSubClass(iface, &subclass);
+-        kr = (*iface)->GetInterfaceProtocol(iface, &protocol);
+-        if (!is_adb_interface(if_class, subclass, protocol)) {
+-            // Ignore non-ADB devices (interface with incorrect
+-            // class/subclass/protocol).
+-            (*iface)->Release(iface);
+-            continue;
+-        }
+-
+-        //* this gets us an ioservice, with which we will find the actual
+-        //* device; after getting a plugin, and querying the interface, of
+-        //* course.
+-        //* Gotta love OS X
+-        kr = (*iface)->GetDevice(iface, &usbDevice);
+-        if (kIOReturnSuccess != kr || !usbDevice) {
+-            LOG(ERROR) << "Couldn't grab device from interface (" << std::hex << kr << ")";
+-            (*iface)->Release(iface);
+-            continue;
+-        }
+-
+-        plugInInterface = NULL;
+-        score = 0;
+-        //* create an intermediate device plugin
+-        kr = IOCreatePlugInInterfaceForService(usbDevice,
+-                                               kIOUSBDeviceUserClientTypeID,
+-                                               kIOCFPlugInInterfaceID,
+-                                               &plugInInterface, &score);
+-        //* only needed this to find the plugin
+-        (void)IOObjectRelease(usbDevice);
+-        if ((kIOReturnSuccess != kr) || (!plugInInterface)) {
+-            LOG(ERROR) << "Unable to create a device plug-in (" << std::hex << kr << ")";
+-            (*iface)->Release(iface);
+-            continue;
+-        }
+-
+-        result = (*plugInInterface)->QueryInterface(plugInInterface,
+-            CFUUIDGetUUIDBytes(kIOUSBDeviceInterfaceID500), (LPVOID*)&dev);
+-        //* only needed this to query the plugin
+-        (*plugInInterface)->Release(plugInInterface);
+-        if (result || !dev) {
+-            LOG(ERROR) << "Couldn't create a device interface (" << std::hex << result << ")";
+-            (*iface)->Release(iface);
+-            continue;
+-        }
+-
+-        //* Now after all that, we actually have a ref to the device and
+-        //* the interface that matched our criteria
+-        kr = (*dev)->GetDeviceVendor(dev, &vendor);
+-        kr = (*dev)->GetDeviceProduct(dev, &product);
+-        kr = (*dev)->GetLocationID(dev, &locationId);
+-        if (kr == KERN_SUCCESS) {
+-            devpath = android::base::StringPrintf("usb:%" PRIu32 "X", locationId);
+-            if (IsKnownDevice(devpath)) {
+-                (*dev)->Release(dev);
+-                (*iface)->Release(iface);
+-                continue;
+-            }
+-        }
+-        kr = (*dev)->USBGetSerialNumberStringIndex(dev, &serialIndex);
+-
+-        if (serialIndex > 0) {
+-            IOUSBDevRequest req;
+-            UInt16          buffer[256];
+-            UInt16          languages[128];
+-
+-            memset(languages, 0, sizeof(languages));
+-
+-            req.bmRequestType =
+-                    USBmakebmRequestType(kUSBIn, kUSBStandard, kUSBDevice);
+-            req.bRequest = kUSBRqGetDescriptor;
+-            req.wValue = (kUSBStringDesc << 8) | 0;
+-            req.wIndex = 0;
+-            req.pData = languages;
+-            req.wLength = sizeof(languages);
+-            kr = (*dev)->DeviceRequest(dev, &req);
+-
+-            if (kr == kIOReturnSuccess && req.wLenDone > 0) {
+-
+-                int langCount = (req.wLenDone - 2) / 2, lang;
+-
+-                for (lang = 1; lang <= langCount; lang++) {
+-                    memset(buffer, 0, sizeof(buffer));
+-                    memset(&req, 0, sizeof(req));
+-
+-                    req.bmRequestType =
+-                            USBmakebmRequestType(kUSBIn, kUSBStandard, kUSBDevice);
+-                    req.bRequest = kUSBRqGetDescriptor;
+-                    req.wValue = (kUSBStringDesc << 8) | serialIndex;
+-                    req.wIndex = languages[lang];
+-                    req.pData = buffer;
+-                    req.wLength = sizeof(buffer);
+-                    kr = (*dev)->DeviceRequest(dev, &req);
+-
+-                    if (kr == kIOReturnSuccess && req.wLenDone > 0) {
+-                        int i, count;
+-
+-                        // skip first word, and copy the rest to the serial string,
+-                        // changing shorts to bytes.
+-                        count = (req.wLenDone - 1) / 2;
+-                        for (i = 0; i < count; i++)
+-                                serial[i] = buffer[i + 1];
+-                        serial[i] = 0;
+-                        break;
+-                    }
+-                }
+-            }
+-        }
+-
+-        (*dev)->Release(dev);
+-
+-        VLOG(USB) << android::base::StringPrintf("Found vid=%04x pid=%04x serial=%s\n",
+-                        vendor, product, serial);
+-        if (devpath.empty()) {
+-            devpath = serial;
+-        }
+-        if (IsKnownDevice(devpath)) {
+-            (*iface)->USBInterfaceClose(iface);
+-            (*iface)->Release(iface);
+-            continue;
+-        }
+-
+-        if (!transport_server_owns_device(devpath, serial)) {
+-            // We aren't allowed to communicate with this device. Don't open this device.
+-            D("ignoring device: not owned by this server dev_path: '%s', serial: '%s'",
+-              devpath.c_str(), serial);
+-            continue;
+-        }
+-
+-        std::unique_ptr<usb_handle> handle =
+-            CheckInterface((IOUSBInterfaceInterface550**)iface, vendor, product);
+-        if (handle == nullptr) {
+-            LOG(ERROR) << "Could not find device interface";
+-            (*iface)->Release(iface);
+-            continue;
+-        }
+-        handle->devpath = devpath;
+-        usb_handle* handle_p = handle.get();
+-        VLOG(USB) << "Add usb device " << serial;
+-        LOG(INFO) << "reported max packet size for " << serial << " is " << handle->max_packet_size;
+-        AddDevice(std::move(handle));
+-        register_usb_transport(reinterpret_cast<::usb_handle*>(handle_p), serial, devpath.c_str(),
+-                               1);
+-    }
+-}
+-
+-// Used to clear both the endpoints before starting.
+-// When adb quits, we might clear the host endpoint but not the device.
+-// So we make sure both sides are clear before starting up.
+-// Returns true if:
+-//      - the feature is disabled (OSX/host only)
+-//      - the feature is enabled and successfully clears both endpoints
+-// Returns false otherwise (if an error is encountered)
+-static bool ClearPipeStallBothEnds(IOUSBInterfaceInterface550** interface, UInt8 bulkEp) {
+-    // If feature-disabled, (silently) bypass clearing both
+-    // endpoints (including device-side).
+-    if (!clear_endpoints()) {
+-        return true;
+-    }
+-
+-    IOReturn rc = (*interface)->ClearPipeStallBothEnds(interface, bulkEp);
+-    if (rc != kIOReturnSuccess) {
+-        LOG(ERROR) << "Could not clear pipe stall both ends: " << std::hex << rc;
+-        return false;
+-    }
+-    return true;
+-}
+-
+-//* TODO: simplify this further since we only register to get ADB interface
+-//* subclass+protocol events
+-static std::unique_ptr<usb_handle> CheckInterface(IOUSBInterfaceInterface550** interface,
+-                                                  UInt16 vendor, UInt16 product) {
+-    std::unique_ptr<usb_handle> handle;
+-    IOReturn kr;
+-    UInt8 interfaceNumEndpoints, interfaceClass, interfaceSubClass, interfaceProtocol;
+-    UInt8 endpoint;
+-
+-    //* Now open the interface.  This will cause the pipes associated with
+-    //* the endpoints in the interface descriptor to be instantiated
+-    kr = (*interface)->USBInterfaceOpen(interface);
+-    if (kr != kIOReturnSuccess) {
+-        LOG(ERROR) << "Could not open interface: " << std::hex << kr;
+-        return NULL;
+-    }
+-
+-    //* Get the number of endpoints associated with this interface
+-    kr = (*interface)->GetNumEndpoints(interface, &interfaceNumEndpoints);
+-    if (kr != kIOReturnSuccess) {
+-        LOG(ERROR) << "Unable to get number of endpoints: " << std::hex << kr;
+-        goto err_get_num_ep;
+-    }
+-
+-    //* Get interface class, subclass and protocol
+-    if ((*interface)->GetInterfaceClass(interface, &interfaceClass) != kIOReturnSuccess ||
+-            (*interface)->GetInterfaceSubClass(interface, &interfaceSubClass) != kIOReturnSuccess ||
+-            (*interface)->GetInterfaceProtocol(interface, &interfaceProtocol) != kIOReturnSuccess) {
+-            LOG(ERROR) << "Unable to get interface class, subclass and protocol";
+-            goto err_get_interface_class;
+-    }
+-
+-    //* check to make sure interface class, subclass and protocol match ADB
+-    //* avoid opening mass storage endpoints
+-    if (!is_adb_interface(interfaceClass, interfaceSubClass, interfaceProtocol)) {
+-        goto err_bad_adb_interface;
+-    }
+-
+-    handle.reset(new usb_handle);
+-    if (handle == nullptr) {
+-        goto err_bad_adb_interface;
+-    }
+-
+-    //* Iterate over the endpoints for this interface and find the first
+-    //* bulk in/out pipes available.  These will be our read/write pipes.
+-    for (endpoint = 1; endpoint <= interfaceNumEndpoints; ++endpoint) {
+-        UInt8   transferType;
+-        UInt16  endPointMaxPacketSize = 0;
+-        UInt8   interval;
+-
+-        // Attempt to retrieve the 'true' packet-size from supported interface.
+-        kr = (*interface)
+-                 ->GetEndpointProperties(interface, 0, endpoint,
+-                    kUSBOut,
+-                    &transferType,
+-                    &endPointMaxPacketSize, &interval);
+-        if (kr == kIOReturnSuccess) {
+-            CHECK_NE(0, endPointMaxPacketSize);
+-        }
+-
+-        UInt16  pipePropMaxPacketSize;
+-        UInt8   number;
+-        UInt8   direction;
+-        UInt8 maxBurst;
+-        UInt8 mult;
+-        UInt16 bytesPerInterval;
+-
+-        // Proceed with extracting the transfer direction, so we can fill in the
+-        // appropriate fields (bulkIn or bulkOut).
+-        kr = (*interface)->GetPipePropertiesV2(interface, endpoint,
+-                                       &direction, &number, &transferType,
+-                                       &pipePropMaxPacketSize, &interval,
+-                                       &maxBurst, &mult,
+-                                       &bytesPerInterval);
+-        if (kr != kIOReturnSuccess) {
+-            LOG(ERROR) << "FindDeviceInterface - could not get pipe properties: "
+-                       << std::hex << kr;
+-            goto err_get_pipe_props;
+-        }
+-
+-        if (kUSBBulk != transferType) continue;
+-
+-        if (kUSBIn == direction) {
+-            handle->bulkIn = endpoint;
+-
+-            if (!ClearPipeStallBothEnds(interface, handle->bulkIn)) {
+-                goto err_get_pipe_props;
+-            }
+-        }
+-
+-        if (kUSBOut == direction) {
+-            handle->bulkOut = endpoint;
+-
+-            if (!ClearPipeStallBothEnds(interface, handle->bulkOut)) {
+-                goto err_get_pipe_props;
+-            }
+-        }
+-
+-        // Compute the packet-size, in case the system did not return the correct value.
+-        if (endPointMaxPacketSize == 0 && maxBurst != 0) {
+-            // bMaxBurst is the number of additional packets in the burst.
+-            endPointMaxPacketSize = pipePropMaxPacketSize / (maxBurst + 1);
+-        }
+-
+-        // mult is only relevant for isochronous endpoints.
+-        CHECK_EQ(0, mult);
+-
+-        handle->zero_mask = endPointMaxPacketSize - 1;
+-        handle->max_packet_size = endPointMaxPacketSize;
+-    }
+-
+-    handle->interface = interface;
+-    return handle;
+-
+-err_get_pipe_props:
+-err_bad_adb_interface:
+-err_get_interface_class:
+-err_get_num_ep:
+-    (*interface)->USBInterfaceClose(interface);
+-    return nullptr;
+-}
+-
+-std::mutex& operate_device_lock = *new std::mutex();
+-
+-static void RunLoopThread() {
+-    adb_thread_setname("RunLoop");
+-
+-    VLOG(USB) << "RunLoopThread started";
+-    while (true) {
+-        {
+-            std::lock_guard<std::mutex> lock_guard(operate_device_lock);
+-            FindUSBDevices();
+-            KickDisconnectedDevices();
+-        }
+-        // Signal the parent that we are running
+-        usb_inited_flag = true;
+-        std::this_thread::sleep_for(1s);
+-    }
+-    VLOG(USB) << "RunLoopThread done";
+-}
+-
+-void usb_cleanup() NO_THREAD_SAFETY_ANALYSIS {
+-    VLOG(USB) << "Macos usb_cleanup";
+-    // Wait until usb operations in RunLoopThread finish, and prevent further operations.
+-    operate_device_lock.lock();
+-    close_usb_devices();
+-}
+-
+-void usb_init() {
+-    static bool initialized = false;
+-    if (!initialized) {
+-        usb_inited_flag = false;
+-
+-        std::thread(RunLoopThread).detach();
+-
+-        // Wait for initialization to finish
+-        while (!usb_inited_flag) {
+-            std::this_thread::sleep_for(100ms);
+-        }
+-
+-        adb_notify_device_scan_complete();
+-        initialized = true;
+-    }
+-}
+-
+-int usb_write(usb_handle *handle, const void *buf, int len)
+-{
+-    IOReturn    result;
+-
+-    if (!len)
+-        return 0;
+-
+-    if (!handle || handle->dead)
+-        return -1;
+-
+-    if (NULL == handle->interface) {
+-        LOG(ERROR) << "usb_write interface was null";
+-        return -1;
+-    }
+-
+-    if (0 == handle->bulkOut) {
+-        LOG(ERROR) << "bulkOut endpoint not assigned";
+-        return -1;
+-    }
+-
+-    result =
+-        (*handle->interface)->WritePipe(handle->interface, handle->bulkOut, (void *)buf, len);
+-
+-    if ((result == 0) && (handle->zero_mask)) {
+-        /* we need 0-markers and our transfer */
+-        if(!(len & handle->zero_mask)) {
+-            result =
+-                (*handle->interface)->WritePipe(
+-                        handle->interface, handle->bulkOut, (void *)buf, 0);
+-        }
+-    }
+-
+-    if (!result)
+-        return len;
+-
+-    LOG(ERROR) << "usb_write failed with status: " << std::hex << result;
+-    return -1;
+-}
+-
+-int usb_read(usb_handle *handle, void *buf, int len)
+-{
+-    IOReturn result;
+-    UInt32  numBytes = len;
+-
+-    if (!len) {
+-        return 0;
+-    }
+-
+-    if (!handle || handle->dead) {
+-        return -1;
+-    }
+-
+-    if (NULL == handle->interface) {
+-        LOG(ERROR) << "usb_read interface was null";
+-        return -1;
+-    }
+-
+-    if (0 == handle->bulkIn) {
+-        LOG(ERROR) << "bulkIn endpoint not assigned";
+-        return -1;
+-    }
+-
+-    result = (*handle->interface)->ReadPipe(handle->interface, handle->bulkIn, buf, &numBytes);
+-
+-    if (kIOUSBPipeStalled == result) {
+-        LOG(ERROR) << "Pipe stalled, clearing stall.\n";
+-        (*handle->interface)->ClearPipeStall(handle->interface, handle->bulkIn);
+-        result = (*handle->interface)->ReadPipe(handle->interface, handle->bulkIn, buf, &numBytes);
+-    }
+-
+-    if (kIOReturnSuccess == result)
+-        return numBytes;
+-    else {
+-        LOG(ERROR) << "usb_read failed with status: " << std::hex << result;
+-    }
+-
+-    return -1;
+-}
+-
+-int usb_close(usb_handle *handle)
+-{
+-    std::lock_guard<std::mutex> lock(g_usb_handles_mutex);
+-    for (auto it = g_usb_handles.begin(); it != g_usb_handles.end(); ++it) {
+-        if ((*it).get() == handle) {
+-            g_usb_handles.erase(it);
+-            break;
+-        }
+-    }
+-    return 0;
+-}
+-
+-void usb_reset(usb_handle* handle) {
+-    // Unimplemented on OS X.
+-    usb_kick(handle);
+-}
+-
+-static void usb_kick_locked(usb_handle *handle)
+-{
+-    LOG(INFO) << "Kicking handle";
+-    /* release the interface */
+-    if (!handle)
+-        return;
+-
+-    if (!handle->dead)
+-    {
+-        handle->dead = true;
+-        (*handle->interface)->USBInterfaceClose(handle->interface);
+-        (*handle->interface)->Release(handle->interface);
+-    }
+-}
+-
+-void usb_kick(usb_handle *handle) {
+-    // Use the lock to avoid multiple thread kicking the device at the same time.
+-    std::lock_guard<std::mutex> lock_guard(g_usb_handles_mutex);
+-    usb_kick_locked(handle);
+-}
+-
+-size_t usb_get_max_packet_size(usb_handle* handle) {
+-    return handle->max_packet_size;
+-}
+diff --git a/crypto/include/adb/crypto/key.h b/crypto/include/adb/crypto/key.h
+index d9ce69e..657c18f 100644
+--- a/crypto/include/adb/crypto/key.h
++++ b/crypto/include/adb/crypto/key.h
+@@ -16,12 +16,16 @@
+ 
+ #pragma once
+ 
++#include <memory>
+ #include <string>
+ 
++#include <openssl/base.h>
+ #include <openssl/evp.h>
+ 
+ #include "key_type.pb.h"
+ 
++// bssl::UniquePtr is provided by BoringSSL's openssl/base.h
++
+ namespace adb {
+ namespace crypto {
+ 
+diff --git a/crypto/include/adb/crypto/x509_generator.h b/crypto/include/adb/crypto/x509_generator.h
+index a269243..1005bf2 100644
+--- a/crypto/include/adb/crypto/x509_generator.h
++++ b/crypto/include/adb/crypto/x509_generator.h
+@@ -16,8 +16,14 @@
+ 
+ #pragma once
+ 
++#include <memory>
++#include <string>
++
++#include <openssl/base.h>
+ #include <openssl/x509v3.h>
+ 
++// bssl::UniquePtr is provided by BoringSSL's openssl/base.h
++
+ namespace adb {
+ namespace crypto {
+ 
+diff --git a/fdevent/fdevent.cpp b/fdevent/fdevent.cpp
+index 46d8cbf..0205ac2 100644
+--- a/fdevent/fdevent.cpp
++++ b/fdevent/fdevent.cpp
+@@ -89,7 +89,8 @@ fdevent* fdevent_context::Create(unique_fd fd, std::variant<fd_func, fd_func2> f
+ }
+ 
+ unique_fd fdevent_context::Destroy(fdevent* fde) {
+-    CheckLooperThread();
++    // adb-mobile: disable threads check for prevent abort
++    // CheckLooperThread();
+ 
+     if (!fde) {
+         return {};
+@@ -200,6 +201,20 @@ void fdevent_context::TerminateLoop() {
+     Interrupt();
+ }
+ 
++void fdevent_context::WaitForLoopExit() {
++    std::unique_lock<std::mutex> lock(loop_exit_mutex_);
++    // Wait until the loop has actually exited (looper_thread_id_ is reset)
++    loop_exit_cv_.wait(lock, [this]() { return !looper_thread_id_.has_value(); });
++}
++
++void fdevent_context::NotifyLoopExit() {
++    {
++        std::lock_guard<std::mutex> lock(loop_exit_mutex_);
++        looper_thread_id_.reset();
++    }
++    loop_exit_cv_.notify_all();
++}
++
+ static std::unique_ptr<fdevent_context> fdevent_create_context() {
+ #if defined(__linux__)
+     return std::make_unique<fdevent_context_epoll>();
+@@ -213,7 +228,7 @@ static auto& g_ambient_fdevent_context() {
+     return context;
+ }
+ 
+-static fdevent_context* fdevent_get_ambient() {
++fdevent_context* fdevent_get_ambient() {
+     return g_ambient_fdevent_context();
+ }
+ 
+@@ -267,6 +282,10 @@ void fdevent_terminate_loop() {
+     fdevent_get_ambient()->TerminateLoop();
+ }
+ 
++void fdevent_wait_for_loop_exit() {
++    fdevent_get_ambient()->WaitForLoopExit();
++}
++
+ size_t fdevent_installed_count() {
+     return fdevent_get_ambient()->InstalledCount();
+ }
+diff --git a/fdevent/fdevent.h b/fdevent/fdevent.h
+index 770e192..17072ee 100644
+--- a/fdevent/fdevent.h
++++ b/fdevent/fdevent.h
+@@ -22,6 +22,7 @@
+ 
+ #include <atomic>
+ #include <chrono>
++#include <condition_variable>
+ #include <deque>
+ #include <functional>
+ #include <map>
+@@ -120,6 +121,12 @@ struct fdevent_context {
+     void TerminateLoop();
+     virtual size_t InstalledCount() = 0;
+ 
++    // Wait for the loop to actually exit (after TerminateLoop is called)
++    void WaitForLoopExit();
++
++    // Notify waiting threads that the loop has exited (called from Loop implementations)
++    void NotifyLoopExit();
++
+   protected:
+     // Interrupt the run loop.
+     virtual void Interrupt() = 0;
+@@ -127,6 +134,10 @@ struct fdevent_context {
+     std::optional<uint64_t> looper_thread_id_ = std::nullopt;
+     std::atomic<bool> terminate_loop_ = false;
+ 
++    // Synchronization for waiting on loop exit
++    std::mutex loop_exit_mutex_;
++    std::condition_variable loop_exit_cv_;
++
+     std::map<int, fdevent> installed_fdevents_;
+ 
+   private:
+@@ -163,4 +174,10 @@ void fdevent_terminate_loop();
+ size_t fdevent_installed_count();
+ void fdevent_reset();
+ 
++// Porting: Wait for the fdevent loop to exit after TerminateLoop is called
++void fdevent_wait_for_loop_exit();
++
++// Porting: Get the global fdevent context
++fdevent_context* fdevent_get_ambient();
++
+ #endif
+diff --git a/fdevent/fdevent_poll.cpp b/fdevent/fdevent_poll.cpp
+index 9b66518..0d27cbe 100644
+--- a/fdevent/fdevent_poll.cpp
++++ b/fdevent/fdevent_poll.cpp
+@@ -171,7 +171,7 @@ void fdevent_context_poll::Loop() {
+ #endif
+ 
+             auto it = this->installed_fdevents_.find(pollfd.fd);
+-            CHECK(it != this->installed_fdevents_.end());
++            // CHECK(it != this->installed_fdevents_.end());
+             fdevent* fde = &it->second;
+ 
+             if (events == 0) {
+@@ -193,7 +193,8 @@ void fdevent_context_poll::Loop() {
+         poll_events.clear();
+     }
+ 
+-    looper_thread_id_.reset();
++    // Notify waiting threads that the loop has exited
++    NotifyLoopExit();
+ }
+ 
+ size_t fdevent_context_poll::InstalledCount() {
+@@ -206,9 +207,9 @@ void fdevent_context_poll::Interrupt() {
+ 
+     // It's possible that we get EAGAIN here, if lots of notifications came in while handling.
+     if (rc == 0) {
+-        PLOG(FATAL) << "fdevent interrupt fd was closed?";
++        std::cout << "fdevent interrupt fd was closed?" << std::endl;
+     } else if (rc == -1 && errno != EAGAIN) {
+-        PLOG(FATAL) << "failed to write to fdevent interrupt fd";
++        std::cout << "failed to write to fdevent interrupt fd" << std::endl;
+     }
+ }
+ 
+diff --git a/transport.cpp b/transport.cpp
+index b99e8bc..510a333 100644
+--- a/transport.cpp
++++ b/transport.cpp
+@@ -169,7 +169,10 @@ void ReconnectHandler::Stop() {
+         running_ = false;
+     }
+     reconnect_cv_.notify_one();
+-    handler_thread_.join();
++    // Fix: Check if the thread is joinable before joining, otherwise it may cause a crash.
++    if (handler_thread_.joinable()) {
++        handler_thread_.join();
++    }
+ 
+     // Drain the queue to free all resources.
+     std::lock_guard<std::mutex> lock(reconnect_mutex_);
+@@ -783,7 +786,12 @@ static void fdevent_register_transport(atransport* t) {
+ 
+ #if ADB_HOST
+ void init_reconnect_handler() {
++    static bool initialized = false;
++    if (initialized) {
++        return;
++    }
+     reconnect_handler.Start();
++    initialized = true;
+ }
+ #endif
+ 

@@ -1,0 +1,16 @@
+diff --git a/absl/copts/AbseilConfigureCopts.cmake b/absl/copts/AbseilConfigureCopts.cmake
+index 3f737c8..48d02a8 100644
+--- a/absl/copts/AbseilConfigureCopts.cmake
++++ b/absl/copts/AbseilConfigureCopts.cmake
+@@ -42,7 +42,10 @@ if(APPLE AND CMAKE_CXX_COMPILER_ID MATCHES [[Clang]])
+     string(TOUPPER "${_arch}" _arch_uppercase)
+     string(REPLACE "X86_64" "X64" _arch_uppercase ${_arch_uppercase})
+     foreach(_flag IN LISTS ABSL_RANDOM_HWAES_${_arch_uppercase}_FLAGS)
+-      list(APPEND ABSL_RANDOM_RANDEN_COPTS "-Xarch_${_arch}" "${_flag}")
++      # Keep each -Xarch selector paired with its flag. Newer CMake versions
++      # de-duplicate repeated -Xarch arguments, which otherwise leaks the
++      # second x86-only flag into arm64 compiler invocations.
++      list(APPEND ABSL_RANDOM_RANDEN_COPTS "SHELL:-Xarch_${_arch} ${_flag}")
+     endforeach()
+   endforeach()
+   # If a compiler happens to deal with an argument for a currently unused

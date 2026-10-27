@@ -1,0 +1,3 @@
+"CFBundleDisplayName" = "Tellyscope";
+"NSLocalNetworkUsageDescription" = "Tellyscope uses the local network to discover and connect to Android TVs for ADB management.";
+"NSPhotoLibraryAddUsageDescription" = "Tellyscope saves Android TV screenshots to your photo library.";

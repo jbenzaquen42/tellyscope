@@ -1,0 +1,234 @@
+diff --git a/porting/adb/client/adb_porting.cpp b/porting/adb/client/adb_porting.cpp
+index 3bcfdf0..afdfd5c 100644
+--- a/porting/adb/client/adb_porting.cpp
++++ b/porting/adb/client/adb_porting.cpp
+@@ -1,10 +1,30 @@
+ #include <cstdio>
+ #include <cstdarg>
+ #include <cstdlib>
++#include <cstring>
+ #include "commandline.h"
+ #include "adb_porting.h"
+ #include "adb_trace.h"
+ 
++int capture_write(char **output_buffer, size_t *output_size, const char *data, size_t length) {
++    if (output_buffer == nullptr || output_size == nullptr || (data == nullptr && length != 0)) {
++        return -1;
++    }
++
++    const size_t current_size = *output_size;
++    char *expanded = static_cast<char *>(realloc(*output_buffer, current_size + length + 1));
++    if (expanded == nullptr) {
++        return -1;
++    }
++    if (length != 0) {
++        memcpy(expanded + current_size, data, length);
++    }
++    expanded[current_size + length] = '\0';
++    *output_buffer = expanded;
++    *output_size = current_size + length;
++    return static_cast<int>(length);
++}
++
+ int capture_printf(char **output_buffer, size_t *output_size, const char *format, ...) {
+     if (output_buffer == nullptr || output_size == nullptr || format == nullptr) {
+         return -1;
+@@ -19,23 +39,22 @@ int capture_printf(char **output_buffer, size_t *output_size, const char *format
+     const int required_size = vsnprintf(nullptr, 0, format, args_copy) + 1;  // +1 for null terminator
+     va_end(args_copy);
+ 
+-    // If the buffer is empty or not large enough, expand the buffer.
+-    size_t current_used_size = *output_size;  // Used output buffer size
+-    *output_buffer = static_cast<char*>(realloc(*output_buffer, current_used_size + required_size));
+-    if (*output_buffer == nullptr) {
+-        perror("realloc");
++    if (required_size <= 0) {
+         va_end(args);
+         return -1;
+     }
+ 
+-    // Append new content to the end of the buffer.
+-    vsnprintf(*output_buffer + current_used_size, required_size, format, args);
+-    *output_size = current_used_size + required_size - 1;  // Update the used buffer size (excluding null terminator)
+-
++    char *formatted = static_cast<char *>(malloc(static_cast<size_t>(required_size)));
++    if (formatted == nullptr) {
++        va_end(args);
++        return -1;
++    }
++    vsnprintf(formatted, static_cast<size_t>(required_size), format, args);
+     va_end(args);
+-
+-    // return size of this output
+-    return required_size - 1;
++    const int appended = capture_write(output_buffer, output_size, formatted,
++                                       static_cast<size_t>(required_size - 1));
++    free(formatted);
++    return appended;
+ }
+ 
+ int adb_commandline_porting(char **output_buffer, size_t *output_buffer_size, int argc, const char** argv) {
+diff --git a/porting/adb/client/adb_porting.h b/porting/adb/client/adb_porting.h
+index 453e90d..5494bc1 100644
+--- a/porting/adb/client/adb_porting.h
++++ b/porting/adb/client/adb_porting.h
+@@ -36,6 +36,10 @@ extern "C" {
+ // capture printf output as adb command result
+ int capture_printf(char **output_buffer, size_t *output_size, const char *format, ...);
+ 
++// Append arbitrary command output. Unlike capture_printf this accepts binary
++// data and never interprets device output as a printf format string.
++int capture_write(char **output_buffer, size_t *output_size, const char *data, size_t length);
++
+ // new method to call adb_commandline for public
+ int adb_commandline_porting(char **output_buffer, size_t *output_buffer_size, int argc, const char** argv);
+ 
+diff --git a/porting/adb/client/commandline.cpp b/porting/adb/client/commandline.cpp
+index 08490eb..96e7367 100644
+--- a/porting/adb/client/commandline.cpp
++++ b/porting/adb/client/commandline.cpp
+@@ -304,13 +304,13 @@ int read_and_dump_protocol(char **output_buffer, size_t *output_size, borrowed_f
+     }
+     while (protocol->Read()) {
+       if (protocol->id() == ShellProtocol::kIdStdout) {
+-        capture_printf(output_buffer, output_size, protocol->data());
++        capture_write(output_buffer, output_size, protocol->data(), protocol->data_length());
+         if (!callback->OnStdout(protocol->data(), protocol->data_length())) {
+           exit_code = SIGPIPE + 128;
+           break;
+         }
+       } else if (protocol->id() == ShellProtocol::kIdStderr) {
+-        capture_printf(output_buffer, output_size, protocol->data());
++        capture_write(output_buffer, output_size, protocol->data(), protocol->data_length());
+         if (!callback->OnStderr(protocol->data(), protocol->data_length())) {
+           exit_code = SIGPIPE + 128;
+           break;
+@@ -342,6 +342,7 @@ int read_and_dump(char **output_buffer, size_t *output_size, borrowed_fd fd, boo
+         if (length <= 0) {
+           break;
+         }
++        capture_write(output_buffer, output_size, raw_buffer, static_cast<size_t>(length));
+         if (!callback->OnStdout(buffer_ptr, length)) {
+           break;
+         }
+@@ -1494,12 +1495,13 @@ static int adb_connect_command_bidirectional(const std::string& command) {
+ }
+ 
+ const std::optional<FeatureSet>& adb_get_feature_set_or_die(char** out_buf, size_t* out_buf_size) {
++    static const std::optional<FeatureSet> empty_features;
+     std::string error;
+     const std::optional<FeatureSet>& features = adb_get_feature_set(&error);
+     if (!features) {
+         // error_exit("%s", error.c_str());
+         capture_printf(out_buf, out_buf_size, "%s\n", error.c_str());
+-        return std::nullopt;
++        return empty_features;
+     }
+     return features;
+ }
+@@ -2471,4 +2473,4 @@ int adb_commandline(char** out_buf, size_t* out_buf_size, int argc, const char**
+     capture_printf(out_buf, out_buf_size, "unknown command %s\n", argv[0]);
+     return 1;
+     __builtin_unreachable();
+-}
+\ No newline at end of file
++}
+diff --git a/porting/adb/client/file_sync_client.cpp b/porting/adb/client/file_sync_client.cpp
+index 2857819..1e9087e 100644
+--- a/porting/adb/client/file_sync_client.cpp
++++ b/porting/adb/client/file_sync_client.cpp
+@@ -219,7 +219,7 @@ struct TransferLedger {
+            << direction_str << ", " << files_skipped << " skipped.";
+         ss << TransferRate();
+ 
+-        capture_printf(output_buffer, output_size, ss.str().c_str());
++        capture_printf(output_buffer, output_size, "%s", ss.str().c_str());
+         lp.Print(ss.str(), LinePrinter::LineType::INFO);
+         lp.KeepInfoLine();
+     }
+diff --git a/porting/scripts/make-adb.sh b/porting/scripts/make-adb.sh
+index b17ce07..2cb5c64 100644
+--- a/porting/scripts/make-adb.sh
++++ b/porting/scripts/make-adb.sh
+@@ -29,11 +29,26 @@ cd "$cmake_root"
+ echo "→ Running cmake...";
+ # Point OpenSSL to BoringSSL and exclude Homebrew's OpenSSL from include paths
+ BORINGSSL_DIR="$SOURCE_ROOT/android-tools/vendor/boringssl"
++IOS_DEPENDENCY_INCLUDES="-I$SOURCE_ROOT/external/brotli/c/include -I$SOURCE_ROOT/external/lz4/lib -I$SOURCE_ROOT/external/zstd/lib"
++# fmt 8's consteval format checker is not compatible with Apple Clang 18
++# (Xcode 26). Keep constexpr support, but use fmt's runtime checker path.
++CPP_DEPENDENCY_INCLUDES="$IOS_DEPENDENCY_INCLUDES -I$SOURCE_ROOT/external/protobuf/third_party/abseil-cpp -I$SOURCE_ROOT/external/protobuf/third_party/googletest/googletest/include -DFMT_CONSTEVAL="
++
++# Expose the libraries built for this exact iOS SDK/architecture. Without
++# these pkg-config files CMake incorrectly searches for macOS Homebrew builds.
++mkdir -p "$FULL_OUTPUT/pkgconfig"
++cp -av "$PORTING_ROOT/pkgconfig/"*.pc "$FULL_OUTPUT/pkgconfig/"
++export PKG_CONFIG_PATH="$FULL_OUTPUT/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+ 
+ cmake -DCMAKE_OSX_SYSROOT="$SDK_NAME" -DCMAKE_OSX_ARCHITECTURES="$ARCH_NAME" \
+ 	-DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" -DCMAKE_BUILD_TYPE=Debug \
++	-DCMAKE_C_FLAGS="$IOS_DEPENDENCY_INCLUDES" \
++	-DCMAKE_CXX_FLAGS="$CPP_DEPENDENCY_INCLUDES" \
+ 	-DOPENSSL_ROOT_DIR="$BORINGSSL_DIR" \
+ 	-DOPENSSL_INCLUDE_DIR="$BORINGSSL_DIR/include" \
++	-DProtobuf_PROTOC_EXECUTABLE="$(command -v protoc)" \
++	-DProtobuf_INCLUDE_DIR="$SOURCE_ROOT/external/protobuf/src" \
++	-DProtobuf_LIBRARY="$FULL_OUTPUT/libprotobuf.a" \
+ 	-DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON \
+ 	-DANDROID_TOOLS_USE_BUNDLED_FMT=ON \
+ 	-DANDROID_TOOLS_USE_BUNDLED_LIBUSB=ON \
+@@ -65,7 +80,7 @@ mv -fv "$SOURCE_ROOT/android-tools/vendor/libbase/logging.cpp.tmp" \
+   "$SOURCE_ROOT/android-tools/vendor/libbase/logging.cpp"
+ 
+ echo "→ Building...";
+-make -j16 libadb crypto decrepit libcutils libzip libdiagnoseusb libbase \
++make -j"${ADB_BUILD_JOBS:-4}" libadb crypto decrepit libcutils libzip libdiagnoseusb libbase \
+ 	libadb_crypto_defaults libcrypto libadb_tls_connection_defaults
+ 
+ echo "→ Copying output...";
+diff --git a/porting/scripts/make-protobuf.sh b/porting/scripts/make-protobuf.sh
+index b6c7a94..2b0692a 100644
+--- a/porting/scripts/make-protobuf.sh
++++ b/porting/scripts/make-protobuf.sh
+@@ -17,13 +17,19 @@ which protoc || {
+ protoc_version=$(protoc --version | cut -d' ' -f2);
+ echo "→ Using protobuf v$protoc_version";
+ 
+-# Switch to version
+-echo "→ Checking out protobuf v$protoc_version...";
+-(cd "$SOURCE_ROOT/external/protobuf" && git clean -f && git checkout "v$protoc_version" && git submodule update --init --recursive)
+-
+-# Fix absl version
+-echo "→ Fixing abseil-cpp version...";
+-(cd "$SOURCE_ROOT/external/protobuf/third_party/abseil-cpp" && git checkout 20240722.0)
++# The repository pins protobuf and Abseil as submodules. Shallow clones do not
++# necessarily contain their tag refs, so validate the bundled source version
++# instead of checking out a tag that may not exist locally.
++# The port replaces the working-tree CMakeLists.txt after the first build.
++# Read the pinned version from Git so repeated device/simulator builds remain
++# reproducible.
++source_version=$(git -C "$SOURCE_ROOT/external/protobuf" show HEAD:CMakeLists.txt | \
++  sed -nE 's/.*protobuf_VERSION_STRING "5\.([0-9]+\.[0-9]+)".*/\1/p')
++if [[ "$source_version" != "$protoc_version" ]]; then
++  echo "** ❌ ERROR: bundled protobuf v$source_version does not match protoc v$protoc_version";
++  exit 1;
++fi
++echo "→ Using pinned protobuf and Abseil submodules";
+ 
+ # Copy CMakeLists.txt to source folder
+ echo "→ Copying CMakeLists.txt...";
+diff --git a/porting/scripts/make-zstd.sh b/porting/scripts/make-zstd.sh
+index a6899aa..8261cb1 100644
+--- a/porting/scripts/make-zstd.sh
++++ b/porting/scripts/make-zstd.sh
+@@ -12,7 +12,9 @@ cd "$cmake_root"
+ 
+ echo "→ Running cmake...";
+ cmake .. -G Xcode -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" -DPLATFORM="$PLATFORM" \
+-	-DDEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" $CMAKE_COMPAT_FLAGS
++	-DDEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" -DZSTD_BUILD_PROGRAMS=OFF \
++	-DZSTD_BUILD_TESTS=OFF -DZSTD_BUILD_SHARED=OFF -DZSTD_BUILD_STATIC=ON \
++	$CMAKE_COMPAT_FLAGS
+ 
+ echo "→ Building...";
+ cmake --build . --config Debug --target libzstd_static --parallel 8

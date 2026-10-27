@@ -1,0 +1,12 @@
+diff --git a/logging.cpp b/logging.cpp
+index 37f2665..a508f32 100644
+--- a/logging.cpp
++++ b/logging.cpp
+@@ -316,7 +316,6 @@ void DefaultAborter(const char* abort_message) {
+ #else
+   UNUSED(abort_message);
+ #endif
+-  abort();
+ }
+ 
+ static void LogdLogChunk(LogId id, LogSeverity severity, const char* tag, const char* message) {

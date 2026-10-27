@@ -1,0 +1,14 @@
+TVADB Android icon helper
+
+The install-free app_process architecture and ActivityThread compatibility
+techniques were informed by the scrcpy server:
+
+Copyright (C) 2018-2026 Genymobile
+Copyright (C) 2018-2026 Romain Vimont
+
+scrcpy is licensed under the Apache License, Version 2.0:
+https://www.apache.org/licenses/LICENSE-2.0
+
+TVADB's helper implementation is maintained in this repository under the
+project's MIT License. This notice is retained to acknowledge the upstream
+compatibility work that informed it.

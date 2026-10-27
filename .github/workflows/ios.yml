@@ -1,0 +1,63 @@
+name: iOS unsigned IPA
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+      - ".gitattributes"
+  push:
+    branches: [codex/ios-port]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+      - ".gitattributes"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select Xcode 26.6
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          test -d /Applications/Xcode_26.6.app/Contents/Developer
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          echo "DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer" >> "$GITHUB_ENV"
+          xcodebuild -version
+
+      - name: Test TellyscopeCore
+        run: swift test --package-path ios/TellyscopeCore
+
+      - name: Test IPA packaging verifier
+        run: python3 -m unittest discover -s ios/tests
+
+      - name: Build for iPhone simulator
+        run: >-
+          xcodebuild -quiet -project ios/iosadb.xcodeproj -scheme TVADB
+          -configuration Debug -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath "$RUNNER_TEMP/tellyscope-simulator"
+          CODE_SIGNING_ALLOWED=NO build
+
+      - name: Build and verify unsigned IPA
+        shell: bash
+        run: bash ios/scripts/build-unsigned-ipa.sh
+
+      - name: Upload unsigned IPA and receipts
+        uses: actions/upload-artifact@v7
+        with:
+          name: TVADB-unsigned-${{ github.sha }}
+          path: |
+            ios/dist/TVADB-unsigned.ipa
+            ios/dist/TVADB-unsigned.ipa.sha256
+            ios/dist/TVADB-unsigned.ipa.provenance.json
+          if-no-files-found: error
+          retention-days: 14

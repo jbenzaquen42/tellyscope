@@ -7,6 +7,14 @@ the terms of the GNU General Public License version 3 (see LICENSE).
 This product includes or is derived from the following third-party work.
 
 --------------------------------------------------------------------------------
+TVADB (iOS port only) — https://github.com/wy164519317/tvadb
+License: MIT, Copyright (c) 2026 TVADB contributors.
+The ios/ app starts from revision 1fa69380f63f6906874e3cbfa7644bd94f7de02c.
+Its MIT notice is preserved in ios/LICENSE; native dependency notices and source
+provenance are in ios/THIRD_PARTY_NOTICES.md and ios/UPSTREAM.md. Tellyscope's
+adaptations remain GPL-3.0-only.
+
+--------------------------------------------------------------------------------
 Kadb — https://github.com/flyfishxu/Kadb
 License: Apache License 2.0
 Used as a library: the ADB protocol client (connect, pair, shell).
