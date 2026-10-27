@@ -7,22 +7,50 @@ on:
       - "ios/**"
       - ".github/workflows/ios.yml"
       - ".gitattributes"
+      - "app/src/helper/**"
+      - "app/build.gradle.kts"
+      - "gradle/**"
   push:
     branches: [codex/ios-port]
     paths:
       - "ios/**"
       - ".github/workflows/ios.yml"
       - ".gitattributes"
+      - "app/src/helper/**"
+      - "app/build.gradle.kts"
+      - "gradle/**"
 
 permissions:
   contents: read
 
 jobs:
+  tv-helper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Build the original Tellyscope on-TV helper
+        run: ./gradlew :app:dexLabelHelper --console=plain
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tellyscope-tv-helper
+          path: app/build/generated/labelHelper/assets/label-helper.jar
+          if-no-files-found: error
   build:
+    needs: tv-helper
     runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: tellyscope-tv-helper
+          path: ios/iosadb/Resources
 
       - name: Select Xcode 26.6
         shell: bash
@@ -61,6 +89,14 @@ jobs:
           sleep 3
           mkdir -p ios/dist
           xcrun simctl io "$device" screenshot ios/dist/iphone-13-mini.png
+          xcrun simctl terminate "$device" app.tellyscope.ios
+          xcrun simctl launch "$device" app.tellyscope.ios -AppleLanguages '(en)' -AppleLocale en_US -tvadb.autoScan NO -TVADBSimulateConnectedDevice
+          sleep 3
+          xcrun simctl io "$device" screenshot ios/dist/overview-preview.png
+          xcrun simctl terminate "$device" app.tellyscope.ios
+          xcrun simctl launch "$device" app.tellyscope.ios -AppleLanguages '(en)' -AppleLocale en_US -tvadb.autoScan NO -TVADBSimulateConnectedDevice -TellyscopePreviewRemote
+          sleep 3
+          xcrun simctl io "$device" screenshot ios/dist/remote-preview.png
 
       - name: Build and verify unsigned IPA
         shell: bash
@@ -75,5 +111,6 @@ jobs:
             ios/dist/TVADB-unsigned.ipa.sha256
             ios/dist/TVADB-unsigned.ipa.provenance.json
             ios/dist/iphone-13-mini.png
+            ios/dist/*-preview.png
           if-no-files-found: error
           retention-days: 14

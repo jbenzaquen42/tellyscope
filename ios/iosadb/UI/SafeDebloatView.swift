@@ -45,7 +45,7 @@ struct SafeDebloatView: View {
                         Text("TV identity: \(snapshot.deviceID)")
                             .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     }
-                    Text("Suggested lists are not included yet. Fire TV Cube and TCL firmware need separate checks.")
+                    Text("History belongs to this TV. Restore skips apps that were already disabled before Tellyscope changed anything.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -104,7 +104,9 @@ struct SafeDebloatView: View {
             }
             .disabled(model.isBusy)
             .searchable(text: $search, prompt: "App name or package")
-            .navigationTitle("Safe debloat")
+            .scrollContentBackground(.hidden)
+            .background(TellyscopeStyle.background)
+            .navigationTitle("History & undo")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

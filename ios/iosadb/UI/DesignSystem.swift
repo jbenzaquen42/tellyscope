@@ -5,9 +5,9 @@ import UIKit
 enum TVADBTheme {
     // A single cool spectrum keeps TVADB recognisable without the generic
     // blue/green/purple mix that made adjacent controls feel unrelated.
-    static let accent = Color(red: 0.08, green: 0.45, blue: 0.97)
-    static let deepBlue = Color(red: 0.04, green: 0.28, blue: 0.70)
-    static let cyan = Color(red: 0.00, green: 0.66, blue: 0.88)
+    static let accent = Color(red: 0, green: 105 / 255, blue: 107 / 255)
+    static let deepBlue = accent
+    static let cyan = Color(red: 0.29, green: 0.39, blue: 0.39)
     static let status = cyan
     static let cornerRadius: CGFloat = 22
 

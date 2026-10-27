@@ -7,6 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C00000000000000000000101 = {isa = PBXBuildFile; fileRef = C00000000000000000000201; };
+		C00000000000000000000102 = {isa = PBXBuildFile; fileRef = C00000000000000000000202; };
+		C00000000000000000000103 = {isa = PBXBuildFile; fileRef = C00000000000000000000203; };
+		C00000000000000000000104 = {isa = PBXBuildFile; fileRef = C00000000000000000000204; };
+		C00000000000000000000105 = {isa = PBXBuildFile; fileRef = C00000000000000000000205; };
+		C00000000000000000000106 = {isa = PBXBuildFile; fileRef = C00000000000000000000206; };
+		C00000000000000000000107 = {isa = PBXBuildFile; fileRef = C00000000000000000000207; };
 		B00000000000000000000101 /* SafeDebloatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000201 /* SafeDebloatView.swift */; };
 		B00000000000000000000102 /* TellyscopeCore in Frameworks */ = {isa = PBXBuildFile; productRef = B00000000000000000000302 /* TellyscopeCore */; };
 		A00000000000000000000101 /* IOSADBApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000201 /* IOSADBApp.swift */; };
@@ -50,6 +57,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		C00000000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TellyscopeRootView.swift; sourceTree = "<group>"; };
+		C00000000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TellyscopeAppsFilesView.swift; sourceTree = "<group>"; };
+		C00000000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TellyscopeRemoteView.swift; sourceTree = "<group>"; };
+		C00000000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TellyscopeDebloatView.swift; sourceTree = "<group>"; };
+		C00000000000000000000205 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TellyscopeTweaksView.swift; sourceTree = "<group>"; };
+		C00000000000000000000206 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TellyscopeAdvancedView.swift; sourceTree = "<group>"; };
+		C00000000000000000000207 = {isa = PBXFileReference; lastKnownFileType = archive.jar; path = "Resources/label-helper.jar"; sourceTree = "<group>"; };
 		B00000000000000000000201 /* SafeDebloatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafeDebloatView.swift; sourceTree = "<group>"; };
 		A00000000000000000000201 /* IOSADBApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSADBApp.swift; sourceTree = "<group>"; };
 		A00000000000000000000202 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
@@ -120,6 +134,7 @@
 		A00000000000000000000402 /* iosadb */ = {
 			isa = PBXGroup;
 			children = (
+				C00000000000000000000207,
 				A00000000000000000000201 /* IOSADBApp.swift */,
 				A0000000000000000000021D /* TVADB-Bridging-Header.h */,
 				A00000000000000000000403 /* Core */,
@@ -173,6 +188,12 @@
 		A00000000000000000000405 /* UI */ = {
 			isa = PBXGroup;
 			children = (
+				C00000000000000000000201,
+				C00000000000000000000202,
+				C00000000000000000000203,
+				C00000000000000000000204,
+				C00000000000000000000205,
+				C00000000000000000000206,
 				B00000000000000000000201 /* SafeDebloatView.swift */,
 				A00000000000000000000222 /* DesignSystem.swift */,
 				A0000000000000000000022C /* H264VideoSurface.swift */,
@@ -264,6 +285,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C00000000000000000000107,
 				A0000000000000000000010C /* Resources/Assets.xcassets in Resources */,
 				A0000000000000000000011A /* Localizable.strings in Resources */,
 				A0000000000000000000011B /* InfoPlist.strings in Resources */,
@@ -306,6 +328,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C00000000000000000000101,
+				C00000000000000000000102,
+				C00000000000000000000103,
+				C00000000000000000000104,
+				C00000000000000000000105,
+				C00000000000000000000106,
 				B00000000000000000000101 /* SafeDebloatView.swift in Sources */,
 				A00000000000000000000101 /* IOSADBApp.swift in Sources */,
 				A00000000000000000000102 /* AppModel.swift in Sources */,
@@ -421,13 +449,13 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 4;
-				DEVELOPMENT_TEAM = B59XTUXRZD;
+				CURRENT_PROJECT_VERSION = 5;
+				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Vendor/adb-public/include";
 				INFOPLIST_FILE = iosadb/Info.plist;
 				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)/Vendor/adb-mobile/output/$(PLATFORM_NAME)/$(CURRENT_ARCH)";
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ladb-full",
@@ -453,13 +481,13 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 4;
-				DEVELOPMENT_TEAM = B59XTUXRZD;
+				CURRENT_PROJECT_VERSION = 5;
+				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Vendor/adb-public/include";
 				INFOPLIST_FILE = iosadb/Info.plist;
 				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)/Vendor/adb-mobile/output/$(PLATFORM_NAME)/$(CURRENT_ARCH)";
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ladb-full",

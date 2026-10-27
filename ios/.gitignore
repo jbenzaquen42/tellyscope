@@ -2,3 +2,4 @@ dist/
 Vendor/adb-mobile/output/
 TellyscopeCore/.build/
 __pycache__/
+iosadb/Resources/label-helper.jar

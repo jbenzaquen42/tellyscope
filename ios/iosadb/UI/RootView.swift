@@ -4,13 +4,7 @@ struct RootView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        Group {
-            if model.connectionState.isConnected {
-                MainTabView()
-            } else {
-                DeviceHomeView()
-            }
-        }
+        TellyscopeRootView()
         .animation(.easeInOut(duration: 0.2), value: model.connectionState.isConnected)
         .overlay(alignment: .top) {
             if let error = model.errorMessage {

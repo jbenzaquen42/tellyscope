@@ -405,7 +405,9 @@ final class AppModel: ObservableObject {
                 do {
                     let stagedURL = try await Self.stageImportedFile(url)
                     defer { try? FileManager.default.removeItem(at: stagedURL.deletingLastPathComponent()) }
-                    let remotePath = path(appending: url.lastPathComponent)
+                    let names = Set(try await filesService.list(path: currentPath).map(\.name))
+                    let destinationName = availableTransferName(url.lastPathComponent, existing: names)
+                    let remotePath = path(appending: destinationName)
                     operationText = String(
                         format: L10n.string("text.uploading_value"),
                         url.lastPathComponent
@@ -703,6 +705,57 @@ final class AppModel: ObservableObject {
             executor: BoundDeviceShell(client: client, host: device.host, port: device.port),
             historyURL: directory.appendingPathComponent("package-history.json")
         )
+    }
+
+    func portExecutor() throws -> BoundDeviceShell {
+        guard connectionState.isConnected, let device = currentDevice else { throw ADBClientError.notConnected }
+        return BoundDeviceShell(client: client, host: device.host, port: device.port)
+    }
+
+    func portStorageURL(_ name: String) throws -> URL {
+        let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            .appendingPathComponent("Tellyscope", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent(name)
+    }
+
+    func portAppAction(_ app: AndroidApp, action: ApplicationAction, expectedDeviceID: String) async {
+        guard !isBusy else { return }
+        isBusy = true
+        isSafetyOperationActive = true
+        operationText = "Verifying \(app.packageName)"
+        defer { isBusy = false; isSafetyOperationActive = false; operationText = "" }
+        do {
+            let guardController = try safePackageController()
+            try await guardController.checkAppAction(package: app.packageName, uninstall: action == .uninstall, expectedDeviceID: expectedDeviceID)
+            switch action {
+            case .forceStop: try await commandService.forceStop(packageName: app.packageName)
+            case .uninstall:
+                _ = try await commandService.uninstall(packageName: app.packageName)
+                applications.removeAll { $0.packageName == app.packageName }
+            default: throw ADBClientError.remoteFailure("Unsupported app action")
+            }
+            noticeMessage = action == .uninstall ? "Uninstalled \(app.displayName)" : "Stopped \(app.displayName)"
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    func portScreen(on: Bool) async -> Bool {
+        guard !isBusy else { return false }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let executor = try portExecutor()
+            let sdk = try await executor.run("getprop ro.build.version.sdk")
+            guard let version = Int(sdk.output.trimmingCharacters(in: .whitespacesAndNewlines)), version <= 33 else {
+                throw ADBClientError.remoteFailure("Picture-only screen off is supported on Android 13 or older. This TV does not expose the required display control.")
+            }
+            guard let helper = Bundle.main.url(forResource: "label-helper", withExtension: "jar") else { throw ADBClientError.remoteFailure("The Tellyscope TV helper is missing from this build.") }
+            _ = try await client.push(localURL: helper, remotePath: "/data/local/tmp/tellyscope-keys.jar")
+            let mode = on ? "p2" : "p0"
+            let result = try await executor.run("printf '\(mode)\\n' | CLASSPATH=/data/local/tmp/tellyscope-keys.jar app_process / app.tellyscope.helper.Keys /data/local/tmp/tellyscope-keys.jar 2>/dev/null; rm -f /data/local/tmp/tellyscope-keys.jar")
+            guard result.output.split(whereSeparator: \.isNewline).contains("1") else { throw ADBClientError.remoteFailure("The TV refused picture-only screen control.") }
+            return true
+        } catch { errorMessage = error.localizedDescription; return false }
     }
 
     func loadApplications() async {

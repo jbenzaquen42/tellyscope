@@ -189,6 +189,28 @@ final class SafePackageControllerTests: XCTestCase {
         XCTAssertFalse(shell.commands.contains(where: { $0.hasPrefix("pm disable-user") }))
     }
 
+    func testManualEnableDoesNotExpandRestoreOwnership() async throws {
+        let shell = FakeShell()
+        shell.disabled = ["com.example.preexisting"]
+        let controller = SafePackageController(executor: shell, historyURL: tempURL())
+        _ = try await controller.enableManually(package: "com.example.preexisting", expectedDeviceID: "serial:TV-123")
+        XCTAssertFalse(shell.disabled.contains("com.example.preexisting"))
+        let snapshot = try await controller.inspect()
+        XCTAssertTrue(snapshot.restorablePackages.isEmpty)
+        XCTAssertEqual(snapshot.history.last?.action, "enable")
+    }
+
+    func testStopAndUninstallGuardProtectHomeAndSystemApps() async throws {
+        let shell = FakeShell()
+        let controller = SafePackageController(executor: shell, historyURL: tempURL())
+        for package in ["com.example.home", "com.android.settings"] {
+            do { try await controller.checkAppAction(package: package, uninstall: false, expectedDeviceID: "serial:TV-123"); XCTFail("protected package accepted") } catch { }
+        }
+        do { try await controller.checkAppAction(package: "com.example.system", uninstall: true, expectedDeviceID: "serial:TV-123"); XCTFail("system uninstall accepted") } catch { }
+        shell.userPackages = ["com.example.video"]
+        try await controller.checkAppAction(package: "com.example.video", uninstall: true, expectedDeviceID: "serial:TV-123")
+    }
+
     private func tempURL() -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         temporaryDirectories.append(directory)
@@ -207,9 +229,11 @@ private final class FakeShell: ShellExecutor {
     var changeHomeOnSecondResolve: String?
     var homeResolveCount = 0
     var disableExitCode: Int32 = 0
+    var userPackages: Set<String> = []
 
     func run(_ command: String) async throws -> ShellResult {
         commands.append(command)
+        if command.hasPrefix("pm list packages -3") { return ShellResult(output: userPackages.map { "package:\($0)" }.joined(separator: "\n"), exitCode: 0) }
         if command.hasPrefix("getprop") { return ShellResult(output: "\(serial)\n\n", exitCode: 0) }
         if command.hasPrefix("cmd package resolve-activity") {
             homeResolveCount += 1

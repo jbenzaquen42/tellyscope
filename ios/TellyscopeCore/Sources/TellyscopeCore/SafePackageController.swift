@@ -112,7 +112,7 @@ public actor SafePackageController {
         var device = state.devices[deviceID] ?? DeviceHistory()
         let home = try await resolvedHome()
         guard home != package else { throw SafePackageError.protectedPackage(package) }
-        if let why = protectedReason(package) { throw SafePackageError.protectedPackage("\(package): \(why)") }
+        if let why = Self.protectedReason(package) { throw SafePackageError.protectedPackage("\(package): \(why)") }
         disabled = try await disabledPackages()
         try await confirmDevice(deviceID)
         if device.baseline == nil {
@@ -158,7 +158,14 @@ public actor SafePackageController {
         return try await enablePackage(package, expectedDeviceID: expectedDeviceID)
     }
 
-    private func enablePackage(_ package: String, expectedDeviceID: String?) async throws -> MutationResult {
+    public func enableManually(package: String, expectedDeviceID: String) async throws -> MutationResult {
+        guard !mutationInProgress else { throw SafePackageError.operationInProgress }
+        mutationInProgress = true
+        defer { mutationInProgress = false }
+        return try await enablePackage(package, expectedDeviceID: expectedDeviceID, includePreexisting: true)
+    }
+
+    private func enablePackage(_ package: String, expectedDeviceID: String?, includePreexisting: Bool = false) async throws -> MutationResult {
         try validate(package)
         let deviceID = try await currentDeviceID()
         if let expectedDeviceID, deviceID != expectedDeviceID { throw SafePackageError.deviceChanged }
@@ -167,10 +174,10 @@ public actor SafePackageController {
         reconcile(deviceID, disabled: disabled, state: &state)
         var device = state.devices[deviceID] ?? DeviceHistory()
         try saveState(state)
-        guard device.baseline?.contains(package) != true,
-              device.appDisabled.contains(package), disabled.contains(package) else {
+        guard disabled.contains(package), includePreexisting || (device.baseline?.contains(package) != true && device.appDisabled.contains(package)) else {
             return MutationResult(deviceID: deviceID, packageName: package, changed: false)
         }
+        if device.baseline == nil { device.baseline = disabled }
         device.pending = PendingMutation(action: "enable", package: package)
         state.devices[deviceID] = device
         try saveState(state)
@@ -204,6 +211,23 @@ public actor SafePackageController {
             if result.changed { results.append(result) }
         }
         return results
+    }
+
+    public func checkAppAction(package: String, uninstall: Bool, expectedDeviceID: String) async throws {
+        guard !mutationInProgress else { throw SafePackageError.operationInProgress }
+        mutationInProgress = true
+        defer { mutationInProgress = false }
+        try validate(package)
+        try await confirmDevice(expectedDeviceID)
+        guard try await resolvedHome() != package, Self.protectedReason(package) == nil else { throw SafePackageError.protectedPackage(package) }
+        if uninstall {
+            let result = try await executor.run("pm list packages -3 --user 0")
+            guard result.exitCode == 0,
+                  result.output.split(whereSeparator: \.isNewline).contains("package:\(package)") else {
+                throw SafePackageError.protectedPackage("Only apps installed by the user can be uninstalled.")
+            }
+        }
+        try await confirmDevice(expectedDeviceID)
     }
 
     private func validate(_ package: String) throws {
@@ -257,7 +281,7 @@ public actor SafePackageController {
         return Set(lines.map { String($0.dropFirst("package:".count)) })
     }
 
-    private func protectedReason(_ package: String) -> String? {
+    nonisolated public static func protectedReason(_ package: String) -> String? {
         let lower = package.lowercased()
         let exact: Set<String> = [
             "android", "com.android.settings", "com.android.tv.settings", "com.amazon.tv.settings.v2",
