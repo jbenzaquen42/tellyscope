@@ -60,6 +60,14 @@ public struct SuggestedDevicePackage: Equatable, Identifiable, Sendable {
     public let note: String?
     public let optional: Bool
     public let selected: Bool
+
+    public init(package: String, name: String, note: String?, optional: Bool, selected: Bool) {
+        self.package = package
+        self.name = name
+        self.note = note
+        self.optional = optional
+        self.selected = selected
+    }
 }
 
 public struct SuggestedDeviceGroup: Equatable, Identifiable, Sendable {

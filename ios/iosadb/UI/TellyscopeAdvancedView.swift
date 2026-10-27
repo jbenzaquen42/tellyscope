@@ -208,9 +208,10 @@ struct TellyscopeAdvancedView: View {
 
     private func trafficRows(_ traffic: [Int: TVTraffic]) -> [(uid: Int, name: String, rx: Int64, tx: Int64)] {
         let packageUIDs = advanced?.packageUIDs ?? [:]
-        return traffic.map { uid, value in
-            (uid, packageUIDs[uid]?.first ?? "UID \(uid)", value.rxBytes, value.txBytes)
-        }.sorted { $0.rx + $0.tx > $1.rx + $1.tx }.prefix(20).map { $0 }
+        let rows: [(uid: Int, name: String, rx: Int64, tx: Int64)] = traffic.map { uid, value in
+            (uid: uid, name: packageUIDs[uid]?.first ?? "UID \(uid)", rx: value.rxBytes, tx: value.txBytes)
+        }
+        return Array(rows.sorted { $0.rx + $0.tx > $1.rx + $1.tx }.prefix(20))
     }
 
     private func totalUsed(_ used: Int64?, _ total: Int64?) -> String? {
