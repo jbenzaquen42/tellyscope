@@ -1,0 +1,281 @@
+{
+  "schema": 1,
+  "id": "tcl-g05-us-ar71",
+  "name": "TCL Smart TV Pro G05 US · AR71",
+  "tested": {
+    "os": "Android 11 · inventory inspected only; disable effects untested",
+    "sdk": null,
+    "build": null
+  },
+  "observed": {
+    "android": "11",
+    "sdk": 30,
+    "display": "AR2101",
+    "incremental": "AR71",
+    "securityPatch": "2025-03-05",
+    "date": "2026-10-27",
+    "validation": "Read-only identity, package and Home inspection. No packages disabled or uninstalled."
+  },
+  "launcher": "com.google.android.apps.tv.launcherx",
+  "keep": [
+    {
+      "pkg": "com.google.android.apps.tv.launcherx",
+      "note": "Current Google TV Home."
+    },
+    {
+      "pkg": "com.google.android.tungsten.setupwraith",
+      "note": "Setup recovery can own saved Wi-Fi; preserve it."
+    },
+    {
+      "pkg": "com.tcl.ttvs",
+      "note": "AR71 firmware updater shares this package with analytics; preserve updates."
+    },
+    {
+      "pkg": "com.tcl.suspension",
+      "note": "Quick Panel handles the physical remote Input button."
+    },
+    {
+      "pkg": "com.tcl.tv",
+      "note": "Live TV and HDMI/antenna playback."
+    },
+    {
+      "pkg": "com.tcl.tvinput",
+      "note": "HDMI passthrough and tuner input."
+    },
+    {
+      "pkg": "com.tcl.settings",
+      "note": "TCL picture, sound and device settings."
+    },
+    {
+      "pkg": "com.tcl.system.server",
+      "note": "TCL system service."
+    },
+    {
+      "pkg": "com.tcl.keyhelp",
+      "note": "Physical remote key handling."
+    },
+    {
+      "pkg": "com.tcl.autopair",
+      "note": "Remote pairing."
+    },
+    {
+      "pkg": "com.tcl.tcl_bt_rcu_service",
+      "note": "Bluetooth remote service."
+    },
+    {
+      "pkg": "com.tcl.providers.config",
+      "note": "TCL configuration provider."
+    },
+    {
+      "pkg": "com.tcl.eva",
+      "note": "Unclear EvaService/RemoterService dependency; keep enabled."
+    },
+    {
+      "pkg": "com.tcl.micmanager",
+      "note": "Microphone manager; dependency not qualified."
+    },
+    {
+      "pkg": "com.tcl.android.webview",
+      "note": "Vendor WebView dependency."
+    },
+    {
+      "pkg": "com.mediatek.backgrounddetection",
+      "note": "Vendor background service; effects unqualified."
+    },
+    {
+      "pkg": "com.tcl.externaldevice.update",
+      "note": "Peripheral firmware updater."
+    },
+    {
+      "pkg": "com.google.android.marvin.talkback",
+      "note": "Accessibility screen reader."
+    }
+  ],
+  "groups": [
+    {
+      "title": "TCL content, ads and promos",
+      "packages": [
+        {
+          "pkg": "com.tcl.tv.plus",
+          "note": "TCL TV+ content app Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.tcl.channelplus",
+          "note": "TCL Live FAST channels Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.tcl.tv.tclchannel",
+          "note": "TCL Channel, bundles Google Mobile Ads Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.tcl.partnercustomizer",
+          "note": "Changes TCL content rows in Google TV Home. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.tcl.messagebox",
+          "note": "TCL pushed messages and promos Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.tcl.usercenter",
+          "note": "TCL account sign-in. Upstream AR71 report says firmware may enable it again after reboot. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.tcl.dashboard",
+          "note": "\"TCL Home\" panel, gift box and promos; no remote key uses it Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        }
+      ]
+    },
+    {
+      "title": "Telemetry and background services",
+      "packages": [
+        {
+          "pkg": "com.tcl.guard",
+          "note": "TGuard: \"health info\", device-use tracking, memory cleaner Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        }
+      ]
+    },
+    {
+      "title": "Retail demo / store mode",
+      "packages": [
+        {
+          "pkg": "com.tcl.esticker",
+          "note": "Optional app; keep it if used. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        }
+      ]
+    },
+    {
+      "title": "Preloaded apps and services",
+      "packages": [
+        {
+          "pkg": "com.tcl.ocean.instructions",
+          "note": "e-manual Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.tcl.gamebar",
+          "note": "Disabling removes the console game-mode overlay. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.tcl.ui_mediaCenter",
+          "note": "Disabling removes the built-in USB media player. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.tcl.gallery",
+          "note": "Optional app; keep it if used. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "android.autoinstalls.config.google.gtvpai",
+          "note": "Optional app; keep it if used. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.google.android.feedback",
+          "note": "Optional app; keep it if used. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.google.android.apps.tv.dreamx",
+          "note": "Disabling removes Google ambient-mode screensavers. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        }
+      ]
+    },
+    {
+      "title": "Unused Google apps (owner's choice)",
+      "packages": [
+        {
+          "pkg": "com.google.android.youtube.tvmusic",
+          "note": "Optional app; keep it if used. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.google.android.play.games",
+          "note": "Optional app; keep it if used. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.google.android.videos",
+          "note": "Google TV / Play Movies storefront Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        }
+      ]
+    },
+    {
+      "title": "Streaming apps — only if unused",
+      "packages": [
+        {
+          "pkg": "com.google.android.youtube.tvunplugged",
+          "note": "YouTube TV Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.tubitv",
+          "note": "Optional app; keep it if used. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.plexapp.android",
+          "note": "Optional app; keep it if used. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        }
+      ]
+    },
+    {
+      "title": "Voice, casting and assistants (owner's choice; comment out what you use)",
+      "packages": [
+        {
+          "pkg": "com.google.android.katniss",
+          "note": "Disabling removes Google Assistant / voice search. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.tcl.assistant",
+          "note": "Disabling removes TCL voice service. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.google.android.tv.assistant",
+          "note": "Assistant LED service; effects on microphone indication untested. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.tcl.smartalexa",
+          "note": "Alexa support. Upstream AR71 report says firmware may enable it again after reboot. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.google.android.apps.mediashell",
+          "note": "Disabling removes Chromecast built-in. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.tcl.airplay2",
+          "note": "Disabling removes AirPlay; paired with com.mediatek.AirplayAPK. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        },
+        {
+          "pkg": "com.mediatek.AirplayAPK",
+          "note": "Disabling removes AirPlay; paired with com.tcl.airplay2. Disable effects have not been tested on the inspected TV.",
+          "optional": true
+        }
+      ]
+    }
+  ],
+  "source": {
+    "repo": "Gathin23/cleanyourtv",
+    "path": "examples/tcl-g05-google-tv/debloat.txt",
+    "commit": "575d73f0f30c329aa7ebaea2bc863943fd9bf7f9"
+  }
+}

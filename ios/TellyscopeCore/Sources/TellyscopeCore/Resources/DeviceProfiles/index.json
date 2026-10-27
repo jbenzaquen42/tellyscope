@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "source": {
+    "repo": "jbenzaquen42/tellyscope",
+    "commit": null
+  },
+  "devices": [
+    {
+      "id": "tcl-g05-us-ar71",
+      "name": "TCL Smart TV Pro G05 US · AR71",
+      "match": {
+        "manufacturer": [
+          "TCL"
+        ],
+        "model": [
+          "Smart TV Pro"
+        ],
+        "device": [
+          "G05"
+        ],
+        "name": [
+          "G05_4K_US"
+        ],
+        "incremental": [
+          "AR71"
+        ],
+        "sdk": [
+          "30"
+        ]
+      },
+      "sdk": null,
+      "file": "devices/tcl-g05-us-ar71.json",
+      "sha256": "c3d659d78a48f7cf044ed63b657a1afea99d0a7b508a2c5e8f5b46ec54abc401"
+    }
+  ]
+}

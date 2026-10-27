@@ -7,7 +7,7 @@ let package = Package(
     platforms: [.iOS(.v17), .macOS(.v13)],
     products: [.library(name: "TellyscopeCore", targets: ["TellyscopeCore"])],
     targets: [
-        .target(name: "TellyscopeCore"),
+        .target(name: "TellyscopeCore", resources: [.copy("Resources/DeviceProfiles")]),
         .testTarget(name: "TellyscopeCoreTests", dependencies: ["TellyscopeCore"]),
     ]
 )

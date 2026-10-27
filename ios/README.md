@@ -23,6 +23,8 @@ To install on a physical iPhone, sign the IPA with a certificate and provisionin
 
 ## First device check
 
+Version 0.2.1 bundles a narrowly matched [TCL G05 US AR71 profile](../docs/devices/tcl-g05-us-ar71.md), based on a read-only inspection. It supplies 29 optional suggestions and 18 protected packages even offline. Nothing is preselected; disabling and reboot behavior on the inspected TV remain untested.
+
 Enable ADB debugging on the Fire TV Cube, then add its IP with port 5555 and accept the authorization prompt on the TV. On the TCL Google TV, use its actual network-debugging endpoint or Wireless Debugging pairing and connection ports. Start with app listing and the remote on each TV.
 
 Open **Overview > Debloat** to review the TV's model list, choose a different list, or pick apps manually. The app records a baseline and pending change before disabling, checks the TV serial and current Home, and verifies the result. History is separate for each TV; Restore excludes apps disabled before this app's changes. Apps already disabled can be explicitly enabled from Apps. TVs without a trustworthy readable serial cannot use mutations. Launcher replacement depends on firmware permissions, especially on Fire TV; failed verification triggers rollback. Advanced access management currently provides the manual TV-side revoke path, not automated key revocation or debugging-prompt approval.

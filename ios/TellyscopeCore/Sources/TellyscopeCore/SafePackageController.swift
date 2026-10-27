@@ -300,6 +300,7 @@ public actor SafePackageController {
     }
 
     nonisolated public static func protectedReason(_ package: String) -> String? {
+        if TellyscopeDeviceLists.verifiedBundledKeepPackages.contains(package) { return "bundled TV profile protects this service" }
         let lower = package.lowercased()
         let exact: Set<String> = [
             "android", "com.android.settings", "com.android.tv.settings", "com.amazon.tv.settings.v2",

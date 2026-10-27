@@ -116,6 +116,23 @@ private let listFilePattern = #"^devices/[A-Za-z0-9][A-Za-z0-9._-]*\.json$"#
 private let checksumPattern = #"^[0-9a-f]{64}$"#
 private let maxDocumentBytes = 2 * 1024 * 1024
 
+private struct BundledDeviceProfile {
+    let entry: DeviceListEntry
+    let list: CuratedDeviceList
+}
+
+private let bundledDeviceProfiles: [BundledDeviceProfile] = {
+    guard let url = Bundle.module.url(forResource: "index", withExtension: "json", subdirectory: "DeviceProfiles"),
+          let data = try? Data(contentsOf: url), let index = parseDeviceListIndex(data) else { return [] }
+    return index.devices.compactMap { entry in
+        guard let name = String(entry.file.dropFirst("devices/".count)).split(separator: "/").last.map(String.init),
+              let fileURL = Bundle.module.url(forResource: String(name.dropLast(".json".count)), withExtension: "json", subdirectory: "DeviceProfiles/devices"),
+              let listData = try? Data(contentsOf: fileURL), deviceListSHA256(listData) == entry.sha256,
+              let list = parseCuratedDeviceList(listData, expectedID: entry.id) else { return nil }
+        return BundledDeviceProfile(entry: entry, list: list)
+    }
+}()
+
 public func parseDeviceListIndex(_ data: Data) -> DeviceListIndex? {
     guard let object = jsonObject(data), let root = object as? [String: Any],
           integer(root["schema"]) == 1, let raw = root["devices"] as? [Any] else { return nil }
@@ -180,12 +197,19 @@ public func normalizeDeviceListSource(_ address: String) -> URL? {
 
 public func matchDeviceList(_ entries: [DeviceListEntry], serial: String, properties: [String: String]) -> (entry: DeviceListEntry?, makerEntries: [DeviceListEntry], maker: String?) {
     guard validSerial(serial) else { return (nil, [], nil) }
-    if let ruleMatch = entries.filter({ matchesRule($0.match, properties) }).only {
+    let ruleMatches = entries.filter({ matchesRule($0.match, properties) })
+    if let ruleMatch = ruleMatches.only {
         return (ruleMatch, [], nil)
+    }
+    if ruleMatches.count > 1 {
+        return (nil, [], nil)
     }
     let makerNames = [properties["manufacturer"], properties["brand"]].compactMap { $0 }.map(squash).filter { !$0.isEmpty }
     if let model = properties["model"].map(squash).flatMap({ $0.count >= 3 ? $0 : nil }) {
-        let modelMatches = entries.filter { wordsFit(model, $0.name) || wordsFit(model, $0.id.replacingOccurrences(of: "-", with: " ")) }
+        let modelMatches = entries.filter {
+            ($0.match == nil || $0.match?.isEmpty == true)
+                && (wordsFit(model, $0.name) || wordsFit(model, $0.id.replacingOccurrences(of: "-", with: " ")))
+        }
         if let entry = modelMatches.only, let listMaker = listMaker(for: entry, among: entries), makerNames.contains(squash(listMaker)) {
             return (entry, [], nil)
         }
@@ -200,6 +224,8 @@ public func matchDeviceList(_ entries: [DeviceListEntry], serial: String, proper
 
 public actor TellyscopeDeviceLists {
     public typealias Fetch = @Sendable (URL) async throws -> Data
+
+    static let verifiedBundledKeepPackages = Set(bundledDeviceProfiles.flatMap { $0.list.keep })
 
     private let cacheDirectory: URL
     private let fetch: Fetch
@@ -266,21 +292,25 @@ public actor TellyscopeDeviceLists {
         if let cachedIndex { return cachedIndex }
         cachedSourceFailed = false
         let cache = cacheDirectory.appendingPathComponent("index.json")
+        let bundledIndex = Bundle.module.url(forResource: "index", withExtension: "json", subdirectory: "DeviceProfiles")
+            .flatMap { try? Data(contentsOf: $0) }.flatMap(parseDeviceListIndex)
+        var remoteIndex: DeviceListIndex?
         do {
             let data = try await fetch(tellyscopeDeviceListsBase.appendingPathComponent("index.json"))
             guard let index = parseDeviceListIndex(data) else { throw CacheError.invalidIndex }
             try save(data, to: cache)
-            cachedIndex = index
-            return index
+            remoteIndex = index
         } catch {
             cachedSourceFailed = true
-            guard let data = try? Data(contentsOf: cache), let index = parseDeviceListIndex(data) else { return nil }
-            cachedIndex = index
-            return index
+            remoteIndex = (try? Data(contentsOf: cache)).flatMap(parseDeviceListIndex)
         }
+        guard let merged = mergeIndexes(remoteIndex, bundledIndex) else { return nil }
+        cachedIndex = merged
+        return merged
     }
 
     private func loadList(_ entry: DeviceListEntry, base: URL) async -> CuratedDeviceList? {
+        if let profile = bundledDeviceProfiles.first(where: { $0.entry.id == entry.id }) { return profile.list }
         let fileURL = cacheDirectory.appendingPathComponent("devices", isDirectory: true)
             .appendingPathComponent(String(entry.file.dropFirst("devices/".count)))
         if let cached = try? Data(contentsOf: fileURL), deviceListSHA256(cached) == entry.sha256,
@@ -292,6 +322,14 @@ public actor TellyscopeDeviceLists {
             try save(remote, to: fileURL)
             return list
         } catch { cachedSourceFailed = true; return nil }
+    }
+
+    private func mergeIndexes(_ remote: DeviceListIndex?, _ bundled: DeviceListIndex?) -> DeviceListIndex? {
+        guard remote != nil || bundled != nil else { return nil }
+        var byID = Dictionary((remote?.devices ?? []).map { ($0.id, $0) }, uniquingKeysWith: { _, newer in newer })
+        for entry in bundled?.devices ?? [] { byID[entry.id] = entry }
+        let entries = byID.values.sorted { $0.id < $1.id }
+        return DeviceListIndex(commit: remote?.commit ?? bundled?.commit, devices: entries)
     }
 
     private func readPicks() -> [String: String] {

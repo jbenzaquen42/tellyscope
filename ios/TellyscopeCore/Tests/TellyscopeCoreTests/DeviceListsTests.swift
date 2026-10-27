@@ -50,6 +50,70 @@ final class DeviceListsTests: XCTestCase {
         XCTAssertEqual(brand.entry?.id, "xgimi-mogo-2")
     }
 
+    func testExplicitRulesCannotDowngradeToGenericNameMatching() {
+        let guarded = DeviceListEntry(
+            id: "tcl-g05-us-ar71", name: "G05_4K_US", match: ["model": ["Smart TV Pro"], "incremental": ["AR71"]],
+            sdk: nil, file: "devices/tcl-g05-us-ar71.json", sha256: String(repeating: "a", count: 64)
+        )
+        for properties in [
+            ["manufacturer": "TCL", "model": "Wrong TV", "incremental": "AR71"],
+            ["manufacturer": "TCL", "model": "Smart TV Pro", "incremental": "WRONG"],
+            ["manufacturer": "TCL", "model": "Smart TV Pro"],
+            ["manufacturer": "TCL", "model": "G05_4K_US", "incremental": "AR71"],
+        ] {
+            XCTAssertNil(matchDeviceList([guarded], serial: "serial:one", properties: properties).entry)
+        }
+        let ambiguous = [guarded, DeviceListEntry(
+            id: "tcl-g05-us-ar72", name: "G05_4K_US", match: ["model": ["Smart TV Pro"]],
+            sdk: nil, file: "devices/tcl-g05-us-ar72.json", sha256: String(repeating: "b", count: 64)
+        )]
+        XCTAssertNil(matchDeviceList(ambiguous, serial: "serial:one", properties: ["model": "Smart TV Pro", "incremental": "AR71"]).entry)
+    }
+
+    func testBundledTCLProfileMatchesOfflineAndKeepsEveryPackageUnselected() async throws {
+        let indexURL = try XCTUnwrap(Bundle.module.url(forResource: "index", withExtension: "json", subdirectory: "DeviceProfiles"))
+        let bundledIndex = try XCTUnwrap(parseDeviceListIndex(Data(contentsOf: indexURL)))
+        let entry = try XCTUnwrap(bundledIndex.devices.first { $0.id == "tcl-g05-us-ar71" })
+        XCTAssertNil(entry.sdk)
+        XCTAssertEqual(entry.match?["manufacturer"], ["TCL"])
+        XCTAssertEqual(entry.match?["model"], ["Smart TV Pro"])
+        XCTAssertEqual(entry.match?["device"], ["G05"])
+        XCTAssertEqual(entry.match?["name"], ["G05_4K_US"])
+        XCTAssertEqual(entry.match?["incremental"], ["AR71"])
+        for (key, wrongValue) in [("manufacturer", "Other"), ("device", "Other"), ("model", "Wrong TV"), ("name", "Wrong_Product"), ("incremental", "WRONG"), ("sdk", "31")] {
+            var mismatched = ["manufacturer": "TCL", "model": "Smart TV Pro", "device": "G05", "name": "G05_4K_US", "incremental": "AR71", "sdk": "30"]
+            mismatched[key] = wrongValue
+            XCTAssertNil(matchDeviceList([entry], serial: "serial:TCL-1", properties: mismatched).entry, "Unexpected automatic match with \(key)=\(wrongValue)")
+        }
+        let missingBuild = ["manufacturer": "TCL", "model": "Smart TV Pro", "device": "G05", "name": "G05_4K_US", "sdk": "30"]
+        XCTAssertNil(matchDeviceList([entry], serial: "serial:TCL-1", properties: missingBuild).entry)
+        let listURL = try XCTUnwrap(Bundle.module.url(forResource: "tcl-g05-us-ar71", withExtension: "json", subdirectory: "DeviceProfiles/devices"))
+        let listData = try Data(contentsOf: listURL)
+        XCTAssertEqual(deviceListSHA256(listData), entry.sha256)
+        let bundledList = try XCTUnwrap(parseCuratedDeviceList(listData, expectedID: entry.id))
+        XCTAssertEqual(TellyscopeDeviceLists.verifiedBundledKeepPackages, bundledList.keep)
+        for package in bundledList.keep { XCTAssertNotNil(SafePackageController.protectedReason(package), package) }
+        XCTAssertTrue(TellyscopeDeviceLists.verifiedBundledKeepPackages.contains("com.tcl.ttvs"))
+        XCTAssertTrue(TellyscopeDeviceLists.verifiedBundledKeepPackages.contains("com.tcl.suspension"))
+        XCTAssertFalse(bundledList.groups.flatMap(\.packages).isEmpty)
+        XCTAssertTrue(bundledList.groups.flatMap(\.packages).allSatisfy(\.optional))
+
+        let store = TellyscopeDeviceLists(cacheDirectory: tempDirectory()) { _ in throw URLError(.notConnectedToInternet) }
+        let properties = ["manufacturer": "TCL", "model": "Smart TV Pro", "device": "G05", "name": "G05_4K_US", "incremental": "AR71", "sdk": "30"]
+        let installed = bundledList.groups.flatMap(\.packages).map(\.package)
+        let apps = installed.map { DeviceListApp(package: $0, name: $0, enabled: true) }
+        let keep = bundledList.keep.first
+        let state = await store.suggestions(serial: "serial:TCL-1", properties: properties, sdk: 30, apps: apps, protectedKeep: keep.map { [$0] } ?? [])
+        XCTAssertTrue(state.offline)
+        XCTAssertEqual(state.match, .model)
+        XCTAssertEqual(state.list?.id, entry.id)
+        XCTAssertTrue(state.groups.flatMap(\.packages).allSatisfy { !$0.selected })
+        if let keep {
+            XCTAssertTrue(state.protectedKeep.contains(keep))
+            XCTAssertFalse(state.groups.flatMap(\.packages).contains { $0.package == keep })
+        }
+    }
+
     func testChecksumValidatedCacheSurvivesOfflineReload() async throws {
         let folder = tempDirectory()
         let list = deviceJSON(id: "acme-55", package: "com.acme.reporter")

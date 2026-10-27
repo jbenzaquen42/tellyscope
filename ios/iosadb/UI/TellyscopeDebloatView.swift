@@ -141,7 +141,7 @@ struct TellyscopeDebloatView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 if let suggestions, suggestions.offline {
-                    Label("Using the validated offline list cache.", systemImage: "wifi.slash")
+                    Label("Using bundled or validated cached profiles offline.", systemImage: "wifi.slash")
                         .font(.caption).foregroundStyle(teal)
                 }
             }
@@ -297,7 +297,7 @@ struct TellyscopeDebloatView: View {
     }
 
     private func testDescription(_ list: CuratedDeviceList, sdk: Int?) -> String {
-        guard let listSDK = list.sdk, let sdk else { return "Android version not verified for this list · nothing preselected" }
+        guard let listSDK = list.sdk, let sdk else { return (list.testedOS ?? "Android version not verified for this list") + " · nothing preselected" }
         return sdk == listSDK ? "Tested on Android SDK \(listSDK)" : "Tested on SDK \(listSDK); this TV reports SDK \(sdk) · nothing preselected"
     }
 
@@ -341,7 +341,7 @@ struct TellyscopeDebloatView: View {
                               protected: SafePackageController.protectedReason($0.packageName) != nil || $0.packageName == home)
             }
             let result = await activeLists.suggestions(
-                serial: current.deviceID, properties: props.filter { $0.key != "sdk" }, sdk: props["sdk"].flatMap(Int.init),
+                serial: current.deviceID, properties: props, sdk: props["sdk"].flatMap(Int.init),
                 apps: appInfos, protectedKeep: keep
             )
             suggestions = result
@@ -393,7 +393,7 @@ struct TellyscopeDebloatView: View {
 
     private func readProperties(_ executor: ShellExecutor) async throws -> [String: String] {
         var result: [String: String] = [:]
-        for key in ["manufacturer", "brand", "model", "device"] {
+        for key in ["manufacturer", "brand", "model", "device", "name"] {
             let response = try await executor.run("getprop ro.product.\(key)")
             guard response.exitCode == 0 else { throw SafePackageError.commandFailed(response.output) }
             let value = response.output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -403,6 +403,10 @@ struct TellyscopeDebloatView: View {
         guard sdk.exitCode == 0 else { throw SafePackageError.commandFailed(sdk.output) }
         let sdkValue = sdk.output.trimmingCharacters(in: .whitespacesAndNewlines)
         if Int(sdkValue) != nil { result["sdk"] = sdkValue }
+        let incremental = try await executor.run("getprop ro.build.version.incremental")
+        guard incremental.exitCode == 0 else { throw SafePackageError.commandFailed(incremental.output) }
+        let build = incremental.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !build.isEmpty { result["incremental"] = build }
         return result
     }
 
