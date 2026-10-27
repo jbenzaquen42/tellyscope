@@ -97,6 +97,7 @@ private final class SnapshotShell: ShellExecutor {
                   ident=[{type=1, rat=0, subId=1, networkId=1}, uid=10123]
                     st=1 rb=1024 tb=2048
                 @@tellyscope-ios@@
+                @@tellyscope-advanced@@
                 sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode
                 0: 0100007F:1F90 08080808:01BB 01 00000000:00000000 00:00000000 00000000 10123 0 1
                 1: 00000000:15B3 0100007F:C001 01 00000000:00000000 00:00000000 00000000 1000 0 2
